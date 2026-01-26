@@ -66,6 +66,7 @@ Scan a project directory for Python files and ROS2 packages.
 ```bash
 robomind scan ~/betaray --verbose
 robomind scan ~/betaray --output scan_results.json
+robomind scan ~/betaray --exclude "*/archive/*"  # Skip archived code
 ```
 
 **Output:**
@@ -84,6 +85,9 @@ robomind analyze ~/betaray -o ./betaray_analysis/
 # Specify output formats
 robomind analyze ~/betaray -f json -f yaml -f html
 
+# Exclude archived/backup directories
+robomind analyze ~/betaray --exclude "*/archive/*" --exclude "*backup*"
+
 # Include remote hosts (distributed systems)
 robomind analyze ~/betaray \
     --remote robot@nav.local:~/betaray \
@@ -99,6 +103,7 @@ robomind analyze ~/betaray --remote robot@jetson.local --keep-remote
 |--------|-------------|
 | `-o, --output` | Output directory (default: `robomind_analysis`) |
 | `-f, --format` | Output formats: `json`, `yaml`, `html` (multiple allowed) |
+| `-e, --exclude` | Glob patterns to exclude (e.g., `*/archive/*`) (multiple allowed) |
 | `-r, --remote` | Remote host spec: `user@host:path` (multiple allowed) |
 | `-k, --key` | SSH private key file |
 | `--keep-remote` | Keep local copies of synced remote code |

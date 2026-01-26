@@ -8,6 +8,7 @@ Designed for robotics projects but works on any Python codebase.
 """
 
 import os
+import fnmatch
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -109,6 +110,7 @@ class ProjectScanner:
         root_path: Path,
         exclude_dirs: Optional[Set[str]] = None,
         exclude_files: Optional[Set[str]] = None,
+        exclude_patterns: Optional[List[str]] = None,
         include_tests: bool = True,
     ):
         """
@@ -118,6 +120,7 @@ class ProjectScanner:
             root_path: Root directory to scan
             exclude_dirs: Additional directories to exclude
             exclude_files: Additional file patterns to exclude
+            exclude_patterns: Glob patterns for paths to exclude (e.g., "*/archive/*")
             include_tests: Whether to include test files
         """
         self.root_path = Path(root_path).resolve()
@@ -139,7 +142,12 @@ class ProjectScanner:
 
         self.exclude_files = exclude_files or set()
 
+        # Glob patterns for path exclusion (e.g., "*/archive/*", "**/backup/**")
+        self.exclude_patterns = exclude_patterns or []
+
         logger.info(f"ProjectScanner initialized for: {self.root_path}")
+        if self.exclude_patterns:
+            logger.info(f"  Exclude patterns: {self.exclude_patterns}")
 
     def should_ignore_dir(self, dir_name: str) -> bool:
         """Check if a directory should be ignored."""
@@ -159,6 +167,57 @@ class ProjectScanner:
 
         return False
 
+    def matches_exclude_pattern(self, path: Path) -> bool:
+        """
+        Check if a path matches any exclusion glob pattern.
+
+        Supports patterns like:
+        - "archive" - exclude any path containing "archive" as a component
+        - "*archive*" - exclude paths containing "archive" anywhere
+        - "*/archive/*" - exclude paths with archive directory
+
+        Args:
+            path: Path to check (relative or absolute)
+
+        Returns:
+            True if path matches any exclude pattern
+        """
+        if not self.exclude_patterns:
+            return False
+
+        # Get path relative to root for matching
+        try:
+            rel_path = path.relative_to(self.root_path)
+        except ValueError:
+            rel_path = path
+
+        # Convert to string with forward slashes for consistent matching
+        path_str = str(rel_path).replace("\\", "/")
+        path_parts = path_str.split("/")
+
+        for pattern in self.exclude_patterns:
+            # Normalize pattern slashes
+            norm_pattern = pattern.replace("\\", "/")
+
+            # Direct fnmatch on full path
+            if fnmatch.fnmatch(path_str, norm_pattern):
+                return True
+
+            # For patterns like "*/archive/*" or "**/archive/**"
+            # Extract the core component name and check if it's in the path
+            core_pattern = norm_pattern.strip("*/")
+            if "/" not in core_pattern:
+                # Simple pattern like "archive" or "*archive*"
+                # Check if any path component matches
+                for part in path_parts:
+                    if fnmatch.fnmatch(part, core_pattern):
+                        return True
+                    # Also check with wildcards
+                    if fnmatch.fnmatch(part, f"*{core_pattern}*"):
+                        return True
+
+        return False
+
     def find_ros2_packages(self) -> Dict[str, Path]:
         """
         Find all ROS2 packages by looking for package.xml files.
@@ -171,6 +230,11 @@ class ProjectScanner:
         for package_xml in self.root_path.rglob("package.xml"):
             # Skip if in excluded directory
             if any(part in self.exclude_dirs for part in package_xml.parts):
+                continue
+
+            # Skip if matches exclusion pattern
+            if self.matches_exclude_pattern(package_xml):
+                logger.debug(f"Skipping package (excluded pattern): {package_xml}")
                 continue
 
             package_path = package_xml.parent
@@ -233,16 +297,24 @@ class ProjectScanner:
 
         # Step 2: Walk directory tree
         for root, dirs, files in os.walk(self.root_path):
+            root_path = Path(root)
+
             # Filter out excluded directories (modify in-place for os.walk)
             dirs[:] = [d for d in dirs if not self.should_ignore_dir(d)]
 
-            root_path = Path(root)
+            # Also filter directories matching exclusion patterns
+            if self.exclude_patterns:
+                dirs[:] = [d for d in dirs if not self.matches_exclude_pattern(root_path / d)]
 
             for file_name in files:
                 if self.should_ignore_file(file_name):
                     continue
 
                 file_path = root_path / file_name
+
+                # Skip if matches exclusion pattern
+                if self.matches_exclude_pattern(file_path):
+                    continue
 
                 try:
                     stats = file_path.stat()

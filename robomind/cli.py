@@ -35,21 +35,32 @@ def main():
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
 @click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def scan(project_path: str, output: Optional[str], verbose: bool):
+def scan(project_path: str, output: Optional[str], exclude: tuple, verbose: bool):
     """Scan a project directory for Python files and ROS2 packages.
+
+    Use --exclude to filter out directories matching glob patterns:
+
+    \b
+    robomind scan ~/project --exclude "*/archive/*" --exclude "**/backup/**"
 
     PROJECT_PATH: Path to the robotics project to scan
     """
     from robomind.core.scanner import ProjectScanner
 
     project_path = Path(project_path).resolve()
+    exclude_patterns = list(exclude) if exclude else None
 
     console.print(f"\n[bold blue]RoboMind Scanner[/bold blue]")
-    console.print(f"Scanning: [cyan]{project_path}[/cyan]\n")
+    console.print(f"Scanning: [cyan]{project_path}[/cyan]")
+    if exclude_patterns:
+        console.print(f"Excluding: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+    console.print()
 
     try:
-        scanner = ProjectScanner(project_path)
+        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
 
         with Progress(
             SpinnerColumn(),
@@ -132,6 +143,8 @@ def scan(project_path: str, output: Optional[str], verbose: bool):
               type=click.Choice(["json", "yaml", "html"]),
               default=["json", "yaml", "html"],
               help="Output formats (can specify multiple)")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
 @click.option("--remote", "-r", multiple=True,
               help="Remote hosts to analyze (user@host:path)")
 @click.option("--key", "-k", type=click.Path(exists=True),
@@ -139,11 +152,17 @@ def scan(project_path: str, output: Optional[str], verbose: bool):
 @click.option("--keep-remote", is_flag=True,
               help="Keep local copies of remote code after analysis")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def analyze(project_path: str, output: str, formats: tuple, remote: tuple,
-            key: Optional[str], keep_remote: bool, verbose: bool):
+def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
+            remote: tuple, key: Optional[str], keep_remote: bool, verbose: bool):
     """Perform full analysis of a ROS2 project.
 
     Extracts nodes, topics, parameters, and generates structured output.
+
+    Use --exclude to filter out archived or backup directories:
+
+    \b
+    robomind analyze ~/betaray -o ./analysis \\
+        --exclude "*/archive/*" --exclude "**/backup/**"
 
     For distributed systems, use --remote to analyze code on remote hosts:
 
@@ -163,11 +182,15 @@ def analyze(project_path: str, output: str, formats: tuple, remote: tuple,
     project_path = Path(project_path).resolve()
     output_dir = Path(output)
     key_file = Path(key) if key else None
+    exclude_patterns = list(exclude) if exclude else None
 
     console.print(f"\n[bold blue]RoboMind Analyzer[/bold blue]")
     console.print(f"Project: [cyan]{project_path}[/cyan]")
     console.print(f"Output:  [cyan]{output_dir}[/cyan]")
     console.print(f"Formats: [cyan]{', '.join(formats)}[/cyan]")
+
+    if exclude_patterns:
+        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
 
     if remote:
         console.print(f"Remote:  [cyan]{', '.join(remote)}[/cyan]")
@@ -234,7 +257,7 @@ def analyze(project_path: str, output: str, formats: tuple, remote: tuple,
 
         # Phase 1: Scan local project
         console.print("[bold]Phase 1: Scanning local project...[/bold]")
-        scanner = ProjectScanner(project_path)
+        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
         scan_result = scanner.scan()
         console.print(f"  Found {len(scan_result.python_files)} Python files, "
                      f"{len(scan_result.packages)} packages")
@@ -405,8 +428,10 @@ def analyze(project_path: str, output: str, formats: tuple, remote: tuple,
 @main.command()
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
 @click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def launch(project_path: str, output: Optional[str], verbose: bool):
+def launch(project_path: str, output: Optional[str], exclude: tuple, verbose: bool):
     """Analyze ROS2 launch files and parameter configs.
 
     Extracts launch topology, node sequences, and parameter configurations.
@@ -418,14 +443,18 @@ def launch(project_path: str, output: Optional[str], verbose: bool):
     from robomind.ros2.param_extractor import ConfigScanner
 
     project_path = Path(project_path).resolve()
+    exclude_patterns = list(exclude) if exclude else None
 
     console.print(f"\n[bold blue]RoboMind Launch Analyzer[/bold blue]")
-    console.print(f"Project: [cyan]{project_path}[/cyan]\n")
+    console.print(f"Project: [cyan]{project_path}[/cyan]")
+    if exclude_patterns:
+        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+    console.print()
 
     try:
         # Phase 1: Find launch files
         console.print("[bold]Phase 1: Scanning for launch files...[/bold]")
-        scanner = ProjectScanner(project_path)
+        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
         scan_result = scanner.scan()
 
         launch_files = scan_result.launch_files
@@ -535,10 +564,12 @@ def launch(project_path: str, output: Optional[str], verbose: bool):
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
 @click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
 @click.option("--graphml", type=click.Path(), help="Export GraphML file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
 @click.option("--coupling/--no-coupling", default=True, help="Include coupling analysis")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def graph(project_path: str, output: Optional[str], graphml: Optional[str],
-          coupling: bool, verbose: bool):
+          exclude: tuple, coupling: bool, verbose: bool):
     """Build and analyze the system dependency graph.
 
     Creates a NetworkX-based graph of ROS2 nodes, topics, services,
@@ -554,14 +585,18 @@ def graph(project_path: str, output: Optional[str], graphml: Optional[str],
     from robomind.analyzers.coupling import CouplingAnalyzer
 
     project_path = Path(project_path).resolve()
+    exclude_patterns = list(exclude) if exclude else None
 
     console.print(f"\n[bold blue]RoboMind Graph Builder[/bold blue]")
-    console.print(f"Project: [cyan]{project_path}[/cyan]\n")
+    console.print(f"Project: [cyan]{project_path}[/cyan]")
+    if exclude_patterns:
+        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+    console.print()
 
     try:
         # Phase 1: Scan and extract
         console.print("[bold]Phase 1: Extracting ROS2 nodes...[/bold]")
-        scanner = ProjectScanner(project_path)
+        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
         scan_result = scanner.scan()
 
         parser = PythonParser()
@@ -705,9 +740,11 @@ def graph(project_path: str, output: Optional[str], graphml: Optional[str],
 @click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
 @click.option("--output", "-o", type=click.Path(), default="visualization.html",
               help="Output HTML file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
 @click.option("--open", "open_browser", is_flag=True, help="Open in browser after generation")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def visualize(project_path: str, output: str, open_browser: bool, verbose: bool):
+def visualize(project_path: str, output: str, exclude: tuple, open_browser: bool, verbose: bool):
     """Generate interactive D3.js visualization of the project.
 
     Creates a standalone HTML file with:
@@ -728,15 +765,19 @@ def visualize(project_path: str, output: str, open_browser: bool, verbose: bool)
 
     project_path = Path(project_path).resolve()
     output_path = Path(output)
+    exclude_patterns = list(exclude) if exclude else None
 
     console.print(f"\n[bold blue]RoboMind Visualizer[/bold blue]")
     console.print(f"Project: [cyan]{project_path}[/cyan]")
-    console.print(f"Output:  [cyan]{output_path}[/cyan]\n")
+    console.print(f"Output:  [cyan]{output_path}[/cyan]")
+    if exclude_patterns:
+        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+    console.print()
 
     try:
         # Phase 1: Extract ROS2 nodes
         console.print("[bold]Phase 1: Extracting ROS2 nodes...[/bold]")
-        scanner = ProjectScanner(project_path)
+        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
         scan_result = scanner.scan()
 
         parser = PythonParser()

@@ -17,6 +17,9 @@ robomind analyze ~/my_project -o ./analysis/
 # Interactive visualization
 robomind visualize ~/my_project -o graph.html --open
 
+# Exclude archived/backup directories
+robomind analyze ~/project --exclude "*/archive/*" --exclude "*backup*"
+
 # Distributed system analysis
 robomind analyze ~/project \
     --remote robot@nav.local:~/project \
@@ -79,7 +82,7 @@ robomind_analysis/
 ### Running Tests
 ```bash
 cd ~/robomind
-pytest tests/ -v              # All tests (192)
+pytest tests/ -v              # All tests (199)
 pytest tests/test_graph.py    # Specific module
 ```
 
@@ -127,14 +130,15 @@ WEIGHT_TEMPORAL_COUPLING = 0.10
 RoboMind was built to analyze the BetaRay/NEXUS robotics system. To analyze NEXUS:
 
 ```bash
-# Analyze the full BetaRay codebase
-robomind analyze ~/betaray -o ~/betaray_robomind_analysis
+# Analyze the full BetaRay codebase (excluding archived code)
+robomind analyze ~/betaray -o ~/betaray_robomind_analysis \
+    --exclude "*/archive/*" --exclude "*backup*"
 
 # Results at ~/betaray_robomind_analysis/
-# - 142 ROS2 nodes detected
-# - 207 topics, 68 connected
-# - 385 publishers, 341 subscribers
-# - 14 packages
+# - 130 ROS2 nodes detected (active code only)
+# - 204 topics, 65 connected
+# - 361 publishers, 327 subscribers
+# - 17 packages
 ```
 
 ## Development Notes
