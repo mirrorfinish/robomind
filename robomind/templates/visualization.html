@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ project_name }} - RoboMind System Graph</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            overflow: hidden;
+        }
+
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+
+        #sidebar {
+            width: 320px;
+            background: #16213e;
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid #0f3460;
+        }
+
+        #graph-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #graph {
+            width: 100%;
+            height: 100%;
+        }
+
+        h1 {
+            font-size: 1.4em;
+            margin-bottom: 5px;
+            color: #4da8da;
+        }
+
+        .subtitle {
+            font-size: 0.85em;
+            color: #888;
+            margin-bottom: 20px;
+        }
+
+        .section {
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 0.9em;
+            font-weight: 600;
+            color: #4da8da;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #search {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 0.9em;
+            margin-bottom: 15px;
+        }
+
+        #search:focus {
+            outline: none;
+            border-color: #4da8da;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+
+        .filter-btn {
+            padding: 6px 12px;
+            border: 1px solid #0f3460;
+            border-radius: 4px;
+            background: transparent;
+            color: #aaa;
+            font-size: 0.8em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .filter-btn:hover {
+            border-color: #4da8da;
+            color: #4da8da;
+        }
+
+        .filter-btn.active {
+            background: #4da8da;
+            border-color: #4da8da;
+            color: #1a1a2e;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .stat-card {
+            background: #1a1a2e;
+            padding: 12px;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #4da8da;
+        }
+
+        .stat-label {
+            font-size: 0.75em;
+            color: #888;
+            text-transform: uppercase;
+        }
+
+        #details-panel {
+            background: #1a1a2e;
+            border-radius: 6px;
+            padding: 15px;
+            display: none;
+        }
+
+        #details-panel.visible {
+            display: block;
+        }
+
+        .detail-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #fff;
+        }
+
+        .detail-type {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 0.7em;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #0f3460;
+            font-size: 0.85em;
+        }
+
+        .detail-row:last-child {
+            border-bottom: none;
+        }
+
+        .detail-key {
+            color: #888;
+        }
+
+        .detail-value {
+            color: #eee;
+            text-align: right;
+            max-width: 180px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .detail-list {
+            margin-top: 10px;
+            padding: 10px;
+            background: #16213e;
+            border-radius: 4px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .detail-list-item {
+            font-size: 0.8em;
+            padding: 4px 0;
+            color: #aaa;
+        }
+
+        /* Node colors by type */
+        .node-ROS2_NODE { fill: #4da8da; }
+        .node-TOPIC { fill: #f39c12; }
+        .node-SERVICE { fill: #9b59b6; }
+        .node-ACTION { fill: #1abc9c; }
+        .node-PARAMETER { fill: #95a5a6; }
+        .node-LAUNCH_FILE { fill: #e74c3c; }
+        .node-HARDWARE_TARGET { fill: #2ecc71; }
+
+        .type-ROS2_NODE { background: #4da8da; color: #1a1a2e; }
+        .type-TOPIC { background: #f39c12; color: #1a1a2e; }
+        .type-SERVICE { background: #9b59b6; color: #fff; }
+        .type-ACTION { background: #1abc9c; color: #1a1a2e; }
+        .type-PARAMETER { background: #95a5a6; color: #1a1a2e; }
+
+        .link {
+            stroke: #0f3460;
+            stroke-opacity: 0.6;
+        }
+
+        .link.highlighted {
+            stroke: #4da8da;
+            stroke-opacity: 1;
+            stroke-width: 2px;
+        }
+
+        .node {
+            cursor: pointer;
+        }
+
+        .node.dimmed {
+            opacity: 0.2;
+        }
+
+        .node.highlighted {
+            stroke: #fff;
+            stroke-width: 3px;
+        }
+
+        .node-label {
+            font-size: 10px;
+            fill: #aaa;
+            pointer-events: none;
+        }
+
+        .node-label.highlighted {
+            fill: #fff;
+            font-weight: 600;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 0.85em;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 300px;
+            z-index: 1000;
+        }
+
+        .tooltip.visible {
+            opacity: 1;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.75em;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        #zoom-controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .zoom-btn {
+            width: 36px;
+            height: 36px;
+            border: 1px solid #0f3460;
+            border-radius: 6px;
+            background: #16213e;
+            color: #4da8da;
+            font-size: 1.2em;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .zoom-btn:hover {
+            background: #0f3460;
+        }
+
+        #info-bar {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(22, 33, 62, 0.9);
+            padding: 8px 15px;
+            border-radius: 6px;
+            font-size: 0.8em;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="sidebar">
+            <h1>{{ project_name }}</h1>
+            <div class="subtitle">RoboMind System Graph</div>
+
+            <div class="section">
+                <input type="text" id="search" placeholder="Search nodes...">
+            </div>
+
+            <div class="section">
+                <div class="section-title">Filter by Type</div>
+                <div class="filter-group" id="type-filters">
+                    <button class="filter-btn active" data-type="all">All</button>
+                    <button class="filter-btn" data-type="ROS2_NODE">Nodes</button>
+                    <button class="filter-btn" data-type="TOPIC">Topics</button>
+                    <button class="filter-btn" data-type="SERVICE">Services</button>
+                    <button class="filter-btn" data-type="PARAMETER">Params</button>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Statistics</div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-nodes">{{ stats.ros2_nodes }}</div>
+                        <div class="stat-label">ROS2 Nodes</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-topics">{{ stats.topics }}</div>
+                        <div class="stat-label">Topics</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-edges">{{ stats.edges }}</div>
+                        <div class="stat-label">Connections</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-packages">{{ stats.packages }}</div>
+                        <div class="stat-label">Packages</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Legend</div>
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #4da8da;"></div>
+                        <span>ROS2 Node</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #f39c12;"></div>
+                        <span>Topic</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #9b59b6;"></div>
+                        <span>Service</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #95a5a6;"></div>
+                        <span>Parameter</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Selected Node</div>
+                <div id="details-panel">
+                    <div class="detail-title" id="detail-name">-</div>
+                    <div class="detail-type" id="detail-type">-</div>
+                    <div id="detail-content"></div>
+                </div>
+                <div id="no-selection" style="color: #666; font-size: 0.85em;">
+                    Click a node to see details
+                </div>
+            </div>
+        </div>
+
+        <div id="graph-container">
+            <div id="info-bar">
+                Drag to pan, scroll to zoom, click nodes for details
+            </div>
+            <svg id="graph"></svg>
+            <div id="zoom-controls">
+                <button class="zoom-btn" id="zoom-in">+</button>
+                <button class="zoom-btn" id="zoom-out">-</button>
+                <button class="zoom-btn" id="zoom-reset">&#8634;</button>
+            </div>
+            <div class="tooltip" id="tooltip"></div>
+        </div>
+    </div>
+
+    <script>
+        // Graph data from RoboMind
+        const graphData = {{ graph_data | safe }};
+
+        // Setup
+        const container = document.getElementById('graph-container');
+        const svg = d3.select('#graph');
+        const tooltip = d3.select('#tooltip');
+
+        let width = container.clientWidth;
+        let height = container.clientHeight;
+
+        svg.attr('width', width).attr('height', height);
+
+        // Create zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4])
+            .on('zoom', (event) => {
+                g.attr('transform', event.transform);
+            });
+
+        svg.call(zoom);
+
+        // Main group for zoom/pan
+        const g = svg.append('g');
+
+        // Arrow marker for directed edges
+        svg.append('defs').append('marker')
+            .attr('id', 'arrowhead')
+            .attr('viewBox', '-0 -5 10 10')
+            .attr('refX', 20)
+            .attr('refY', 0)
+            .attr('orient', 'auto')
+            .attr('markerWidth', 6)
+            .attr('markerHeight', 6)
+            .append('path')
+            .attr('d', 'M 0,-5 L 10,0 L 0,5')
+            .attr('fill', '#0f3460');
+
+        // Process data
+        const nodes = graphData.nodes.map(n => ({
+            ...n,
+            id: n.id,
+            radius: getNodeRadius(n.type)
+        }));
+
+        const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+        const links = graphData.edges.filter(e =>
+            nodeMap.has(e.source) && nodeMap.has(e.target)
+        ).map(e => ({
+            ...e,
+            source: e.source,
+            target: e.target
+        }));
+
+        function getNodeRadius(type) {
+            switch(type) {
+                case 'ROS2_NODE': return 12;
+                case 'TOPIC': return 8;
+                case 'SERVICE': return 8;
+                case 'ACTION': return 8;
+                case 'PARAMETER': return 5;
+                default: return 6;
+            }
+        }
+
+        // Force simulation
+        const simulation = d3.forceSimulation(nodes)
+            .force('link', d3.forceLink(links).id(d => d.id).distance(80))
+            .force('charge', d3.forceManyBody().strength(-200))
+            .force('center', d3.forceCenter(width / 2, height / 2))
+            .force('collision', d3.forceCollide().radius(d => d.radius + 10));
+
+        // Draw links
+        const link = g.append('g')
+            .selectAll('line')
+            .data(links)
+            .join('line')
+            .attr('class', 'link')
+            .attr('marker-end', 'url(#arrowhead)');
+
+        // Draw nodes
+        const node = g.append('g')
+            .selectAll('circle')
+            .data(nodes)
+            .join('circle')
+            .attr('class', d => `node node-${d.type}`)
+            .attr('r', d => d.radius)
+            .call(drag(simulation))
+            .on('click', (event, d) => showDetails(d))
+            .on('mouseover', (event, d) => highlightConnections(d, true))
+            .on('mouseout', (event, d) => highlightConnections(d, false));
+
+        // Draw labels
+        const label = g.append('g')
+            .selectAll('text')
+            .data(nodes)
+            .join('text')
+            .attr('class', 'node-label')
+            .attr('dy', d => d.radius + 12)
+            .attr('text-anchor', 'middle')
+            .text(d => truncateLabel(d.name, 15));
+
+        // Update positions on tick
+        simulation.on('tick', () => {
+            link
+                .attr('x1', d => d.source.x)
+                .attr('y1', d => d.source.y)
+                .attr('x2', d => d.target.x)
+                .attr('y2', d => d.target.y);
+
+            node
+                .attr('cx', d => d.x)
+                .attr('cy', d => d.y);
+
+            label
+                .attr('x', d => d.x)
+                .attr('y', d => d.y);
+        });
+
+        // Drag behavior
+        function drag(simulation) {
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+
+            return d3.drag()
+                .on('start', dragstarted)
+                .on('drag', dragged)
+                .on('end', dragended);
+        }
+
+        // Highlight connections
+        function highlightConnections(d, highlight) {
+            const connectedNodes = new Set([d.id]);
+
+            links.forEach(l => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+
+                if (sourceId === d.id || targetId === d.id) {
+                    connectedNodes.add(sourceId);
+                    connectedNodes.add(targetId);
+                }
+            });
+
+            if (highlight) {
+                node.classed('dimmed', n => !connectedNodes.has(n.id));
+                node.classed('highlighted', n => n.id === d.id);
+                label.classed('highlighted', n => n.id === d.id);
+                link.classed('highlighted', l => {
+                    const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                    const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                    return sourceId === d.id || targetId === d.id;
+                });
+
+                // Show tooltip
+                tooltip
+                    .html(`<strong>${d.name}</strong><br><span style="color:#888">${d.type}</span>`)
+                    .style('left', (d.x + 20) + 'px')
+                    .style('top', (d.y - 10) + 'px')
+                    .classed('visible', true);
+            } else {
+                node.classed('dimmed', false);
+                node.classed('highlighted', false);
+                label.classed('highlighted', false);
+                link.classed('highlighted', false);
+                tooltip.classed('visible', false);
+            }
+        }
+
+        // Show details panel
+        function showDetails(d) {
+            const panel = document.getElementById('details-panel');
+            const noSelection = document.getElementById('no-selection');
+
+            document.getElementById('detail-name').textContent = d.name;
+
+            const typeEl = document.getElementById('detail-type');
+            typeEl.textContent = d.type;
+            typeEl.className = `detail-type type-${d.type}`;
+
+            let content = '';
+
+            if (d.file_path) {
+                content += `<div class="detail-row"><span class="detail-key">File</span><span class="detail-value">${d.file_path}</span></div>`;
+            }
+            if (d.line_number) {
+                content += `<div class="detail-row"><span class="detail-key">Line</span><span class="detail-value">${d.line_number}</span></div>`;
+            }
+            if (d.package) {
+                content += `<div class="detail-row"><span class="detail-key">Package</span><span class="detail-value">${d.package}</span></div>`;
+            }
+            if (d.hardware_target) {
+                content += `<div class="detail-row"><span class="detail-key">Hardware</span><span class="detail-value">${d.hardware_target}</span></div>`;
+            }
+
+            // Show metadata
+            if (d.metadata) {
+                for (const [key, value] of Object.entries(d.metadata)) {
+                    if (value !== null && value !== undefined) {
+                        content += `<div class="detail-row"><span class="detail-key">${key}</span><span class="detail-value">${value}</span></div>`;
+                    }
+                }
+            }
+
+            // Show connections
+            const inbound = links.filter(l => {
+                const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+                return targetId === d.id;
+            });
+            const outbound = links.filter(l => {
+                const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+                return sourceId === d.id;
+            });
+
+            if (inbound.length > 0 || outbound.length > 0) {
+                content += `<div class="detail-row"><span class="detail-key">Inbound</span><span class="detail-value">${inbound.length}</span></div>`;
+                content += `<div class="detail-row"><span class="detail-key">Outbound</span><span class="detail-value">${outbound.length}</span></div>`;
+            }
+
+            document.getElementById('detail-content').innerHTML = content;
+            panel.classList.add('visible');
+            noSelection.style.display = 'none';
+        }
+
+        // Search functionality
+        const searchInput = document.getElementById('search');
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+
+            if (query === '') {
+                node.style('opacity', 1);
+                label.style('opacity', 1);
+                link.style('opacity', 0.6);
+            } else {
+                node.style('opacity', d =>
+                    d.name.toLowerCase().includes(query) ||
+                    d.id.toLowerCase().includes(query) ? 1 : 0.1
+                );
+                label.style('opacity', d =>
+                    d.name.toLowerCase().includes(query) ||
+                    d.id.toLowerCase().includes(query) ? 1 : 0.1
+                );
+                link.style('opacity', 0.1);
+            }
+        });
+
+        // Type filters
+        const filterBtns = document.querySelectorAll('.filter-btn');
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                const type = btn.dataset.type;
+
+                if (type === 'all') {
+                    node.style('display', 'block');
+                    label.style('display', 'block');
+                    link.style('display', 'block');
+                } else {
+                    node.style('display', d => d.type === type ? 'block' : 'none');
+                    label.style('display', d => d.type === type ? 'block' : 'none');
+                    link.style('display', l => {
+                        const sourceNode = nodeMap.get(typeof l.source === 'object' ? l.source.id : l.source);
+                        const targetNode = nodeMap.get(typeof l.target === 'object' ? l.target.id : l.target);
+                        return (sourceNode && sourceNode.type === type) ||
+                               (targetNode && targetNode.type === type) ? 'block' : 'none';
+                    });
+                }
+            });
+        });
+
+        // Zoom controls
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            svg.transition().duration(300).call(zoom.scaleBy, 1.5);
+        });
+
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            svg.transition().duration(300).call(zoom.scaleBy, 0.67);
+        });
+
+        document.getElementById('zoom-reset').addEventListener('click', () => {
+            svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+        });
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            width = container.clientWidth;
+            height = container.clientHeight;
+            svg.attr('width', width).attr('height', height);
+            simulation.force('center', d3.forceCenter(width / 2, height / 2));
+            simulation.alpha(0.3).restart();
+        });
+
+        // Helper functions
+        function truncateLabel(text, maxLen) {
+            return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+        }
+    </script>
+</body>
+</html>

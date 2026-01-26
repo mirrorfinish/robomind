@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robomind"
+version = "1.0.0"
+description = "Rapid prototyping system for autonomous ROS2 robots"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Justin", email = "robomind@example.com"}
+]
+keywords = ["robotics", "ros2", "analysis", "prototyping", "autonomous", "visualization"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+]
+
+dependencies = [
+    "click>=8.1.0",
+    "networkx>=3.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",  # For beautiful CLI output
+    "jinja2>=3.0",  # For HTML template generation
+]
+
+[project.optional-dependencies]
+remote = [
+    "paramiko>=3.0",  # SSH support
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "isort>=5.0",
+    "mypy>=1.0",
+]
+all = [
+    "robomind[remote,dev]",
+]
+
+[project.scripts]
+robomind = "robomind.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mirrorfinish/robomind"
+Documentation = "https://github.com/mirrorfinish/robomind#readme"
+Repository = "https://github.com/mirrorfinish/robomind.git"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

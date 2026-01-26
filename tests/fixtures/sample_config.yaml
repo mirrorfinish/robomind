@@ -1,0 +1,51 @@
+# Sample ROS2 Parameter Config File for Testing RoboMind Parser
+# Standard ROS2 parameter file format
+
+slam_toolbox:
+  ros__parameters:
+    # SLAM Mode
+    mode: mapping
+
+    # Frame IDs
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+
+    # Map Parameters
+    resolution: 0.05
+    use_map_saver: true
+
+    # Loop Closure
+    do_loop_closing: true
+    loop_search_maximum_distance: 3.0
+
+    # Nested parameters
+    correlation:
+      search_space_dimension: 0.5
+      search_space_resolution: 0.01
+
+motor_controller:
+  ros__parameters:
+    # Motor settings
+    max_speed: 1800
+    wheel_base: 0.17
+    wheel_radius: 0.0325
+    i2c_address: 0x26
+
+    # Control modes
+    enable_pid: true
+    pid_gains:
+      - 1.0
+      - 0.1
+      - 0.05
+
+voice_system:
+  ros__parameters:
+    # Voice settings
+    wake_word: "hey robot"
+    sensitivity: 0.7
+    timeout_seconds: 10.0
+
+    # TTS settings
+    tts_engine: piper
+    voice_model: /models/piper/en_US-amy-medium.onnx
