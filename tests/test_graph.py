@@ -280,6 +280,7 @@ class TestGraphBuilder:
 
     def test_add_ros2_node(self, sample_ros2_node):
         """Test adding a ROS2 node."""
+        import hashlib
         builder = GraphBuilder()
         builder.add_ros2_node(sample_ros2_node)
 
@@ -288,8 +289,10 @@ class TestGraphBuilder:
         # Should have: 1 node + 3 topics + 2 parameters = 6 nodes
         assert len(graph) >= 4  # At minimum: node + 3 topics
 
-        # Check node exists
-        node = graph.get_node("node:test_node")
+        # Check node exists (ID format is node:name:path_hash)
+        path_hash = hashlib.md5(str(sample_ros2_node.file_path).encode()).hexdigest()[:8]
+        node_id = f"node:test_node:{path_hash}"
+        node = graph.get_node(node_id)
         assert node is not None
         assert node.name == "test_node"
         assert node.component_type == ComponentType.ROS2_NODE
@@ -301,15 +304,18 @@ class TestGraphBuilder:
 
     def test_add_multiple_nodes(self, sample_ros2_node, sample_ros2_node_subscriber):
         """Test adding multiple connected nodes."""
+        import hashlib
         builder = GraphBuilder()
         builder.add_ros2_node(sample_ros2_node)
         builder.add_ros2_node(sample_ros2_node_subscriber)
 
         graph = builder.build()
 
-        # Both nodes should exist
-        assert graph.get_node("node:test_node") is not None
-        assert graph.get_node("node:motor_node") is not None
+        # Both nodes should exist (ID format is node:name:path_hash)
+        hash1 = hashlib.md5(str(sample_ros2_node.file_path).encode()).hexdigest()[:8]
+        hash2 = hashlib.md5(str(sample_ros2_node_subscriber.file_path).encode()).hexdigest()[:8]
+        assert graph.get_node(f"node:test_node:{hash1}") is not None
+        assert graph.get_node(f"node:motor_node:{hash2}") is not None
 
         # /cmd_vel topic should have both publisher and subscriber edges
         edges = graph.get_edges()

@@ -405,8 +405,16 @@ class GraphBuilder:
 
     def add_ros2_node(self, node: ROS2NodeInfo):
         """Add a ROS2 node and its connections to the graph."""
-        # Create node ID
-        node_id = f"node:{node.name}"
+        # Create unique node ID using full path hash to handle duplicate node names
+        # This handles cases where the same node name appears in different files
+        # (e.g., jetson_ai and jetson_navigation both have parallelvoicenode)
+        if node.file_path:
+            # Use hash of full path to ensure uniqueness
+            import hashlib
+            path_hash = hashlib.md5(str(node.file_path).encode()).hexdigest()[:8]
+            node_id = f"node:{node.name}:{path_hash}"
+        else:
+            node_id = f"node:{node.name}"
 
         # Add the node
         graph_node = GraphNode(
