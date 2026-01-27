@@ -219,17 +219,12 @@ def build_communication_map(
 
     # Add ROS2 topics if provided
     if ros2_topic_graph:
-        for topic in ros2_topic_graph.topics:
-            pubs = [conn.publisher for conn in ros2_topic_graph.connections
-                    if hasattr(conn, 'topic') and conn.topic == topic]
-            subs = [conn.subscriber for conn in ros2_topic_graph.connections
-                    if hasattr(conn, 'topic') and conn.topic == topic]
-
-            if pubs or subs:
+        for topic_name, topic_conn in ros2_topic_graph.topics.items():
+            if topic_conn.publishers or topic_conn.subscribers:
                 comm_map.add_ros2_topic(
-                    topic=topic,
-                    publishers=list(set(pubs)),
-                    subscribers=list(set(subs)),
+                    topic=topic_name,
+                    publishers=list(topic_conn.publishers),
+                    subscribers=list(topic_conn.subscribers),
                 )
 
     # Build HTTP links
