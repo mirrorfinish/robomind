@@ -25,6 +25,17 @@ robomind analyze ~/project \
     --remote robot@nav.local:~/project \
     --remote robot@ai.local:~/project
 
+# Validate against live ROS2 system
+robomind validate ~/my_project
+robomind validate ~/my_project --ssh robot@jetson.local
+
+# Generate architecture report
+robomind report ~/my_project -o ARCHITECTURE_REPORT.md
+
+# Trace data flow between nodes
+robomind trace ~/project --from sensor_node --to controller_node
+robomind trace ~/project --topic /cmd_vel
+
 # Test remote connections
 robomind remote robot@jetson.local --ros2-info
 ```
@@ -44,7 +55,12 @@ robomind/
 │   ├── launch_analyzer.py  # Launch file parsing
 │   └── param_extractor.py  # YAML config extraction
 ├── analyzers/
-│   └── coupling.py         # Component coupling strength
+│   ├── coupling.py         # Component coupling strength
+│   └── flow_tracer.py      # Data flow path tracing
+├── validators/
+│   └── live_validator.py   # Validate against running ROS2
+├── reporters/
+│   └── markdown_reporter.py # Generate markdown reports
 ├── exporters/
 │   ├── json_exporter.py    # Machine-readable JSON
 │   ├── yaml_exporter.py    # AI-optimized YAML
@@ -64,6 +80,9 @@ robomind/
 | `robomind launch <path>` | Analyze launch files |
 | `robomind graph <path>` | Build dependency graph |
 | `robomind visualize <path>` | Generate HTML visualization |
+| `robomind validate <path>` | Compare against live ROS2 system |
+| `robomind report <path>` | Generate markdown architecture report |
+| `robomind trace <path>` | Trace data flow between nodes |
 | `robomind remote <hosts>` | Test SSH connections |
 | `robomind info` | Show capabilities |
 
@@ -82,7 +101,7 @@ robomind_analysis/
 ### Running Tests
 ```bash
 cd ~/robomind
-pytest tests/ -v              # All tests (199)
+pytest tests/ -v              # All tests (248)
 pytest tests/test_graph.py    # Specific module
 ```
 
@@ -100,6 +119,13 @@ pytest tests/test_graph.py    # Specific module
 
 **Analyzers:**
 - `CouplingAnalyzer` - Calculates coupling strength between components
+- `FlowTracer` - Traces data flow paths through the system
+
+**Validators:**
+- `LiveValidator` - Compares static analysis against running ROS2 system
+
+**Reporters:**
+- `MarkdownReporter` - Generates comprehensive markdown reports
 
 **Exporters:**
 - `JSONExporter` - Full system graph export

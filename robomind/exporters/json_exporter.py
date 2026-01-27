@@ -25,6 +25,12 @@ from robomind.ros2.topic_extractor import TopicGraphResult
 from robomind.ros2.launch_analyzer import LaunchTopology
 from robomind.ros2.param_extractor import ParameterCollection
 
+# Optional HTTP communication support
+try:
+    from robomind.http.communication_map import CommunicationMap
+except ImportError:
+    CommunicationMap = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,6 +109,7 @@ class JSONExporter:
         self.coupling: Optional[CouplingMatrix] = None
         self.launch_topology: Optional[LaunchTopology] = None
         self.parameters: Optional[ParameterCollection] = None
+        self.http_comm_map = None  # Optional HTTP communication map
 
     def set_metadata(
         self,
@@ -146,6 +153,10 @@ class JSONExporter:
     def set_parameters(self, parameters: ParameterCollection):
         """Set parameter collection."""
         self.parameters = parameters
+
+    def set_http_communication(self, http_comm_map):
+        """Set HTTP communication map."""
+        self.http_comm_map = http_comm_map
 
     def _update_summary_from_nodes(self):
         """Update summary statistics from nodes."""
@@ -221,6 +232,10 @@ class JSONExporter:
         if self.parameters:
             result["parameters"] = self.parameters.to_dict()
 
+        # HTTP Communication
+        if self.http_comm_map:
+            result["http_communication"] = self.http_comm_map.to_dict()
+
         return result
 
     def export(self, output_path: Path, indent: int = 2) -> ExportResult:
@@ -279,6 +294,7 @@ def export_analysis_json(
     topic_graph: Optional[TopicGraphResult] = None,
     launch_topology: Optional[LaunchTopology] = None,
     parameters: Optional[ParameterCollection] = None,
+    http_comm_map=None,
     project_name: str = "Unknown",
     project_path: str = "",
 ) -> ExportResult:
@@ -293,6 +309,7 @@ def export_analysis_json(
         topic_graph: Optional TopicGraphResult
         launch_topology: Optional LaunchTopology
         parameters: Optional ParameterCollection
+        http_comm_map: Optional HTTP CommunicationMap
         project_name: Name of the project
         project_path: Path to the project
 
@@ -313,6 +330,8 @@ def export_analysis_json(
         exporter.set_launch_topology(launch_topology)
     if parameters:
         exporter.set_parameters(parameters)
+    if http_comm_map:
+        exporter.set_http_communication(http_comm_map)
 
     return exporter.export(output_path)
 

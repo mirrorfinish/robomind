@@ -98,6 +98,11 @@ class HTMLExporter:
         """Set topic graph for topic information."""
         self.topic_graph = topic_graph
 
+    def set_http_communication(self, http_comm_map):
+        """Set HTTP communication map (currently stored for future use)."""
+        # HTTP communication visualization can be extended in future
+        self.http_comm_map = http_comm_map
+
     def _build_graph_data(self) -> Dict[str, Any]:
         """Build graph data structure for D3.js."""
         if not self.system_graph:
@@ -239,6 +244,7 @@ def export_html_visualization(
     coupling: Optional[CouplingMatrix] = None,
     nodes: Optional[List[ROS2NodeInfo]] = None,
     topic_graph: Optional[TopicGraphResult] = None,
+    http_comm_map=None,
     open_browser: bool = False,
 ) -> ExportResult:
     """
@@ -251,6 +257,7 @@ def export_html_visualization(
         coupling: Optional coupling analysis
         nodes: Optional ROS2 nodes for metadata
         topic_graph: Optional topic graph
+        http_comm_map: Optional HTTP communication map
         open_browser: Whether to open in browser
 
     Returns:
@@ -266,6 +273,8 @@ def export_html_visualization(
         exporter.set_nodes(nodes)
     if topic_graph:
         exporter.set_topic_graph(topic_graph)
+    if http_comm_map:
+        exporter.set_http_communication(http_comm_map)
 
     return exporter.export(output_path, open_browser=open_browser)
 

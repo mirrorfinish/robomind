@@ -37,14 +37,20 @@ def main():
 @click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
 @click.option("--exclude", "-e", multiple=True,
               help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def scan(project_path: str, output: Optional[str], exclude: tuple, verbose: bool):
+def scan(project_path: str, output: Optional[str], exclude: tuple,
+         use_default_excludes: bool, verbose: bool):
     """Scan a project directory for Python files and ROS2 packages.
 
     Use --exclude to filter out directories matching glob patterns:
 
     \b
     robomind scan ~/project --exclude "*/archive/*" --exclude "**/backup/**"
+
+    By default, archive/backup/test directories are excluded. Use --no-default-excludes
+    to include all files.
 
     PROJECT_PATH: Path to the robotics project to scan
     """
@@ -55,12 +61,18 @@ def scan(project_path: str, output: Optional[str], exclude: tuple, verbose: bool
 
     console.print(f"\n[bold blue]RoboMind Scanner[/bold blue]")
     console.print(f"Scanning: [cyan]{project_path}[/cyan]")
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green] (archive, backup, test, etc.)")
     if exclude_patterns:
-        console.print(f"Excluding: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+        console.print(f"Additional excludes: [yellow]{', '.join(exclude_patterns)}[/yellow]")
     console.print()
 
     try:
-        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
 
         with Progress(
             SpinnerColumn(),
@@ -140,11 +152,21 @@ def scan(project_path: str, output: Optional[str], exclude: tuple, verbose: bool
 @click.option("--output", "-o", type=click.Path(), default="robomind_analysis",
               help="Output directory for analysis results")
 @click.option("--format", "-f", "formats", multiple=True,
-              type=click.Choice(["json", "yaml", "html"]),
+              type=click.Choice(["json", "yaml", "html", "ai-context", "sarif"]),
               default=["json", "yaml", "html"],
               help="Output formats (can specify multiple)")
 @click.option("--exclude", "-e", multiple=True,
               help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
+@click.option("--min-confidence", type=float, default=0.0,
+              help="Minimum confidence threshold (0.0-1.0) to filter findings")
+@click.option("--deployment-manifest", type=click.Path(exists=True),
+              help="YAML file describing what actually runs in production")
+@click.option("--trace-launch", type=click.Path(exists=True),
+              help="Launch file to trace for deployed nodes")
+@click.option("--http/--no-http", "detect_http", default=True,
+              help="Detect HTTP/REST communication between services (default: enabled)")
 @click.option("--remote", "-r", multiple=True,
               help="Remote hosts to analyze (user@host:path)")
 @click.option("--key", "-k", type=click.Path(exists=True),
@@ -153,16 +175,31 @@ def scan(project_path: str, output: Optional[str], exclude: tuple, verbose: bool
               help="Keep local copies of remote code after analysis")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
-            remote: tuple, key: Optional[str], keep_remote: bool, verbose: bool):
+            use_default_excludes: bool, min_confidence: float,
+            deployment_manifest: Optional[str], trace_launch: Optional[str],
+            detect_http: bool, remote: tuple, key: Optional[str],
+            keep_remote: bool, verbose: bool):
     """Perform full analysis of a ROS2 project.
 
     Extracts nodes, topics, parameters, and generates structured output.
 
-    Use --exclude to filter out archived or backup directories:
+    By default, archive/backup/test directories are excluded. Use --no-default-excludes
+    to include all files.
+
+    Use --min-confidence to filter out low-confidence findings (likely false positives):
 
     \b
-    robomind analyze ~/betaray -o ./analysis \\
-        --exclude "*/archive/*" --exclude "**/backup/**"
+    robomind analyze ~/betaray -o ./analysis --min-confidence 0.5
+
+    Use --deployment-manifest to specify what code actually runs in production:
+
+    \b
+    robomind analyze ~/betaray --deployment-manifest deployment.yaml
+
+    Use --trace-launch to trace a specific launch file for deployed nodes:
+
+    \b
+    robomind analyze ~/betaray --trace-launch src/bringup/launch/robot.launch.py
 
     For distributed systems, use --remote to analyze code on remote hosts:
 
@@ -189,8 +226,16 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
     console.print(f"Output:  [cyan]{output_dir}[/cyan]")
     console.print(f"Formats: [cyan]{', '.join(formats)}[/cyan]")
 
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green] (archive, backup, test, etc.)")
     if exclude_patterns:
-        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+        console.print(f"Additional excludes: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+    if min_confidence > 0:
+        console.print(f"Min confidence: [cyan]{min_confidence}[/cyan]")
+    if deployment_manifest:
+        console.print(f"Deployment manifest: [cyan]{deployment_manifest}[/cyan]")
+    if trace_launch:
+        console.print(f"Trace launch: [cyan]{trace_launch}[/cyan]")
 
     if remote:
         console.print(f"Remote:  [cyan]{', '.join(remote)}[/cyan]")
@@ -257,10 +302,48 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
 
         # Phase 1: Scan local project
         console.print("[bold]Phase 1: Scanning local project...[/bold]")
-        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
         scan_result = scanner.scan()
         console.print(f"  Found {len(scan_result.python_files)} Python files, "
                      f"{len(scan_result.packages)} packages")
+
+        # Phase 1.5: Deployment awareness (if manifest or launch tracing provided)
+        deployment_info = None
+        traced_nodes = set()  # Node names that are actually deployed
+
+        if deployment_manifest or trace_launch:
+            console.print("[bold]Phase 1.5: Analyzing deployment...[/bold]")
+
+            if deployment_manifest:
+                from robomind.deployment import load_deployment_manifest
+
+                manifest = load_deployment_manifest(Path(deployment_manifest))
+                deployment_info = manifest
+                console.print(f"  Manifest: {manifest.summary()['total_hosts']} hosts, "
+                             f"{manifest.summary()['launch_files']} launch files")
+
+                # Track deployed launch files
+                for lf in manifest.deployed_launch_files:
+                    console.print(f"    Launch: [cyan]{lf}[/cyan]")
+
+            if trace_launch:
+                from robomind.deployment import trace_launch_file
+
+                trace = trace_launch_file(Path(trace_launch), project_root=project_path)
+                console.print(f"  Traced {trace.summary()['total_nodes']} nodes from launch file")
+
+                # Add traced node names
+                for node in trace.nodes:
+                    traced_nodes.add(node.name)
+                    traced_nodes.add(node.executable)
+
+                if trace.errors:
+                    for error in trace.errors[:3]:
+                        console.print(f"    [yellow]Warning: {error}[/yellow]")
 
         # Phase 2: Parse
         console.print("[bold]Phase 2: Parsing Python files...[/bold]")
@@ -324,7 +407,8 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
 
         topic_graph = topic_extractor.build()
 
-        # Statistics
+        # Statistics (before filtering)
+        total_nodes_before = len(all_nodes)
         total_publishers = sum(len(n.publishers) for n in all_nodes)
         total_subscribers = sum(len(n.subscribers) for n in all_nodes)
         total_timers = sum(len(n.timers) for n in all_nodes)
@@ -335,6 +419,160 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
         console.print(f"  Timers: {total_timers}, Parameters: {total_params}")
         console.print(f"  Topics: {len(topic_graph.topics)} "
                      f"({len(topic_graph.get_connected_topics())} connected)")
+
+        # Phase 3.5: Confidence scoring (if min_confidence > 0)
+        if min_confidence > 0:
+            console.print("[bold]Phase 3.5: Calculating confidence scores...[/bold]")
+            from robomind.analyzers.confidence import (
+                ConfidenceCalculator,
+                NodeConfidenceContext,
+                get_confidence_summary,
+            )
+            from robomind.ros2.launch_analyzer import LaunchFileAnalyzer
+
+            # Build lookup of which nodes are in launch files
+            launch_analyzer = LaunchFileAnalyzer()
+            node_to_launch_files = {}
+
+            for lf in scan_result.launch_files:
+                launch_info = launch_analyzer.analyze_file(lf.path)
+                for node_decl in launch_info.nodes:
+                    key = node_decl.name
+                    if key not in node_to_launch_files:
+                        node_to_launch_files[key] = []
+                    node_to_launch_files[key].append(str(lf.relative_path))
+
+            # Add nodes from deployment manifest launch files if available
+            if deployment_info:
+                for lf_name in deployment_info.deployed_launch_files:
+                    # Find this launch file in scan results
+                    for lf in scan_result.launch_files:
+                        if Path(lf_name).name in str(lf.relative_path):
+                            launch_info = launch_analyzer.analyze_file(lf.path)
+                            for node_decl in launch_info.nodes:
+                                if node_decl.name not in node_to_launch_files:
+                                    node_to_launch_files[node_decl.name] = []
+                                if str(lf.relative_path) not in node_to_launch_files[node_decl.name]:
+                                    node_to_launch_files[node_decl.name].append(str(lf.relative_path))
+                            break
+
+            # Build lookup for file location confidence
+            file_confidence_map = {
+                str(pf.path): (pf.location_confidence, pf.dead_code_indicators)
+                for pf in scan_result.python_files
+            }
+
+            # Calculate confidence for each node
+            calculator = ConfidenceCalculator(min_confidence=min_confidence)
+            node_scores = []
+
+            for node in all_nodes:
+                # Get file-based confidence info
+                loc_conf, dead_indicators = file_confidence_map.get(
+                    str(node.file_path), (1.0, [])
+                )
+
+                # Determine launch files for this node
+                node_launch_files = node_to_launch_files.get(node.name, [])
+
+                # If traced_nodes has entries and this node is traced, add synthetic entry
+                if traced_nodes and (node.name in traced_nodes or
+                                     node.class_name in traced_nodes):
+                    if not node_launch_files:
+                        node_launch_files = ["[traced from --trace-launch]"]
+
+                # Build context
+                context = NodeConfidenceContext(
+                    node_name=node.name,
+                    file_path=node.file_path,
+                    package_name=node.package_name,
+                    location_confidence=loc_conf,
+                    dead_code_indicators=dead_indicators,
+                    in_launch_files=node_launch_files,
+                    has_publishers=len(node.publishers) > 0,
+                    has_subscribers=len(node.subscribers) > 0,
+                    publisher_topics=[p.topic for p in node.publishers],
+                    subscriber_topics=[s.topic for s in node.subscribers],
+                    topics_with_both_pubsub=[
+                        t for t in topic_graph.get_connected_topics()
+                        if any(p.topic == t for p in node.publishers) or
+                           any(s.topic == t for s in node.subscribers)
+                    ],
+                )
+
+                score = calculator.calculate_node_confidence(context)
+                node_scores.append((node, score))
+
+            # Filter by minimum confidence
+            filtered = [(n, s) for n, s in node_scores if s.score >= min_confidence]
+            all_nodes = [n for n, s in filtered]
+
+            # Report confidence summary
+            all_scores = [s for n, s in node_scores]
+            summary = get_confidence_summary(all_scores)
+
+            console.print(f"  Confidence: avg {summary['average']:.2f}, "
+                         f"{summary['above_0.7']} high, {summary['below_0.3']} low")
+            console.print(f"  Filtered: {total_nodes_before} -> {len(all_nodes)} nodes "
+                         f"(min_confidence={min_confidence})")
+
+            # Rebuild topic graph with filtered nodes
+            topic_extractor = TopicExtractor()
+            for node in all_nodes:
+                topic_extractor.add_nodes([node])
+            topic_graph = topic_extractor.build()
+
+        # Phase 3.7: HTTP communication detection
+        http_comm_map = None
+        if detect_http:
+            console.print("[bold]Phase 3.7: Detecting HTTP communication...[/bold]")
+            from robomind.http import (
+                HTTPEndpointExtractor,
+                HTTPClientExtractor,
+                build_communication_map,
+            )
+
+            endpoint_extractor = HTTPEndpointExtractor()
+            client_extractor = HTTPClientExtractor()
+
+            all_endpoints = []
+            all_clients = []
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Scanning for HTTP...", total=len(scan_result.python_files))
+
+                for pf in scan_result.python_files:
+                    # Extract endpoints (Flask/FastAPI servers)
+                    endpoints = endpoint_extractor.extract_from_file(pf.path)
+                    all_endpoints.extend(endpoints)
+
+                    # Extract clients (requests, httpx, aiohttp)
+                    clients = client_extractor.extract_from_file(pf.path)
+                    all_clients.extend(clients)
+
+                    progress.advance(task)
+
+            # Build communication map
+            http_comm_map = build_communication_map(
+                http_endpoints=all_endpoints,
+                http_clients=all_clients,
+                ros2_topic_graph=topic_graph,
+            )
+
+            # Report findings
+            summary = http_comm_map.summary()
+            console.print(f"  HTTP endpoints: {summary['http_endpoints']}")
+            console.print(f"  HTTP clients: {summary['http_clients']}")
+            if summary['http_target_hosts']:
+                console.print(f"  Target hosts: {', '.join(summary['http_target_hosts'][:5])}")
+            console.print(f"  Communication links: {summary['total_links']} "
+                         f"({summary['http_links']} HTTP, {summary['ros2_links']} ROS2)")
 
         # Phase 4: Build graph and coupling (for exports)
         console.print("[bold]Phase 4: Building system graph...[/bold]")
@@ -369,6 +607,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 topic_graph=topic_graph,
                 project_name=project_path.name,
                 project_path=str(project_path),
+                http_comm_map=http_comm_map,
             )
 
             if result.success:
@@ -387,6 +626,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 coupling=coupling_matrix,
                 topic_graph=topic_graph,
                 project_name=project_path.name,
+                http_comm_map=http_comm_map,
             )
 
             for name, result in results.items():
@@ -407,12 +647,61 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 coupling=coupling_matrix,
                 nodes=all_nodes,
                 topic_graph=topic_graph,
+                http_comm_map=http_comm_map,
             )
 
             if result.success:
                 console.print(f"  [green]HTML:[/green] {html_path}")
             else:
                 console.print(f"  [red]HTML failed:[/red] {result.error}")
+
+        if "ai-context" in formats:
+            from robomind.exporters.ai_context_exporter import export_ai_context
+
+            ai_path = output_dir / "ai_context.yaml"
+            # Build confidence scores dict if available
+            node_confidence = {}
+            if min_confidence > 0 and 'node_scores' in dir():
+                node_confidence = {n.name: s.score for n, s in node_scores}
+
+            success = export_ai_context(
+                output_path=ai_path,
+                nodes=all_nodes,
+                topic_graph=topic_graph,
+                coupling=coupling_matrix,
+                http_comm_map=http_comm_map,
+                confidence_scores=node_confidence,
+                project_name=project_path.name,
+            )
+
+            if success:
+                console.print(f"  [green]AI Context:[/green] {ai_path}")
+            else:
+                console.print(f"  [red]AI Context failed[/red]")
+
+        if "sarif" in formats:
+            from robomind.exporters.sarif_exporter import export_sarif
+
+            sarif_path = output_dir / "robomind.sarif"
+            # Build confidence scores dict if available
+            node_confidence = {}
+            if min_confidence > 0 and 'node_scores' in dir():
+                node_confidence = {n.name: s.score for n, s in node_scores}
+
+            success = export_sarif(
+                output_path=sarif_path,
+                nodes=all_nodes,
+                topic_graph=topic_graph,
+                coupling=coupling_matrix,
+                confidence_scores=node_confidence,
+                project_name=project_path.name,
+                project_path=str(project_path),
+            )
+
+            if success:
+                console.print(f"  [green]SARIF:[/green] {sarif_path}")
+            else:
+                console.print(f"  [red]SARIF failed[/red]")
 
         console.print(f"\n[bold green]Analysis complete![/bold green]")
         console.print(f"Results saved to: [cyan]{output_dir}[/cyan]")
@@ -430,8 +719,11 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
 @click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
 @click.option("--exclude", "-e", multiple=True,
               help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def launch(project_path: str, output: Optional[str], exclude: tuple, verbose: bool):
+def launch(project_path: str, output: Optional[str], exclude: tuple,
+           use_default_excludes: bool, verbose: bool):
     """Analyze ROS2 launch files and parameter configs.
 
     Extracts launch topology, node sequences, and parameter configurations.
@@ -447,14 +739,20 @@ def launch(project_path: str, output: Optional[str], exclude: tuple, verbose: bo
 
     console.print(f"\n[bold blue]RoboMind Launch Analyzer[/bold blue]")
     console.print(f"Project: [cyan]{project_path}[/cyan]")
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green]")
     if exclude_patterns:
-        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+        console.print(f"Additional excludes: [yellow]{', '.join(exclude_patterns)}[/yellow]")
     console.print()
 
     try:
         # Phase 1: Find launch files
         console.print("[bold]Phase 1: Scanning for launch files...[/bold]")
-        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
         scan_result = scanner.scan()
 
         launch_files = scan_result.launch_files
@@ -566,10 +864,12 @@ def launch(project_path: str, output: Optional[str], exclude: tuple, verbose: bo
 @click.option("--graphml", type=click.Path(), help="Export GraphML file path")
 @click.option("--exclude", "-e", multiple=True,
               help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
 @click.option("--coupling/--no-coupling", default=True, help="Include coupling analysis")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def graph(project_path: str, output: Optional[str], graphml: Optional[str],
-          exclude: tuple, coupling: bool, verbose: bool):
+          exclude: tuple, use_default_excludes: bool, coupling: bool, verbose: bool):
     """Build and analyze the system dependency graph.
 
     Creates a NetworkX-based graph of ROS2 nodes, topics, services,
@@ -589,14 +889,20 @@ def graph(project_path: str, output: Optional[str], graphml: Optional[str],
 
     console.print(f"\n[bold blue]RoboMind Graph Builder[/bold blue]")
     console.print(f"Project: [cyan]{project_path}[/cyan]")
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green]")
     if exclude_patterns:
-        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+        console.print(f"Additional excludes: [yellow]{', '.join(exclude_patterns)}[/yellow]")
     console.print()
 
     try:
         # Phase 1: Scan and extract
         console.print("[bold]Phase 1: Extracting ROS2 nodes...[/bold]")
-        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
         scan_result = scanner.scan()
 
         parser = PythonParser()
@@ -742,9 +1048,12 @@ def graph(project_path: str, output: Optional[str], graphml: Optional[str],
               help="Output HTML file path")
 @click.option("--exclude", "-e", multiple=True,
               help="Glob patterns for paths to exclude (e.g., '*/archive/*')")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
 @click.option("--open", "open_browser", is_flag=True, help="Open in browser after generation")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-def visualize(project_path: str, output: str, exclude: tuple, open_browser: bool, verbose: bool):
+def visualize(project_path: str, output: str, exclude: tuple,
+              use_default_excludes: bool, open_browser: bool, verbose: bool):
     """Generate interactive D3.js visualization of the project.
 
     Creates a standalone HTML file with:
@@ -770,14 +1079,20 @@ def visualize(project_path: str, output: str, exclude: tuple, open_browser: bool
     console.print(f"\n[bold blue]RoboMind Visualizer[/bold blue]")
     console.print(f"Project: [cyan]{project_path}[/cyan]")
     console.print(f"Output:  [cyan]{output_path}[/cyan]")
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green]")
     if exclude_patterns:
-        console.print(f"Exclude: [yellow]{', '.join(exclude_patterns)}[/yellow]")
+        console.print(f"Additional excludes: [yellow]{', '.join(exclude_patterns)}[/yellow]")
     console.print()
 
     try:
         # Phase 1: Extract ROS2 nodes
         console.print("[bold]Phase 1: Extracting ROS2 nodes...[/bold]")
-        scanner = ProjectScanner(project_path, exclude_patterns=exclude_patterns)
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
         scan_result = scanner.scan()
 
         parser = PythonParser()
@@ -935,6 +1250,487 @@ def remote(hosts: tuple, key: Optional[str], ros2_info: bool, verbose: bool):
 
 
 @main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option("--ssh", type=str, help="SSH host for live ROS2 system (user@host)")
+@click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
+@click.option("--export-prometheus", type=click.Path(),
+              help="Export Prometheus metrics to file")
+@click.option("--check-http/--no-check-http", default=True,
+              help="Check HTTP endpoints (default: enabled)")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+def validate(project_path: str, ssh: Optional[str], output: Optional[str],
+             export_prometheus: Optional[str], check_http: bool,
+             exclude: tuple, use_default_excludes: bool, verbose: bool):
+    """Validate static analysis against a live ROS2 system.
+
+    Compares code analysis results against a running ROS2 system to find:
+    - Topics in code but not active
+    - Topics active but not in code
+    - Type mismatches
+    - Missing nodes
+    - HTTP endpoint health (if --check-http)
+
+    Requires a running ROS2 system (locally or via SSH).
+
+    \b
+    Examples:
+        robomind validate ~/betaray
+        robomind validate ~/betaray --ssh robot@nav.local
+        robomind validate ~/betaray -o validation.json
+        robomind validate ~/betaray --export-prometheus metrics.prom
+    """
+    from robomind.core.scanner import ProjectScanner
+    from robomind.core.parser import PythonParser
+    from robomind.ros2.node_extractor import ROS2NodeExtractor
+    from robomind.ros2.topic_extractor import TopicExtractor
+    from robomind.validators.live_validator import LiveValidator
+
+    project_path = Path(project_path).resolve()
+    exclude_patterns = list(exclude) if exclude else None
+
+    console.print(f"\n[bold blue]RoboMind Live Validator[/bold blue]")
+    console.print(f"Project: [cyan]{project_path}[/cyan]")
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green]")
+    if ssh:
+        console.print(f"Remote:  [cyan]{ssh}[/cyan]")
+    if check_http:
+        console.print(f"HTTP checking: [green]enabled[/green]")
+    console.print()
+
+    try:
+        # Extract ROS2 nodes from code
+        console.print("[bold]Phase 1: Analyzing code...[/bold]")
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
+        scan_result = scanner.scan()
+
+        parser = PythonParser()
+        node_extractor = ROS2NodeExtractor()
+        topic_extractor = TopicExtractor()
+        all_nodes = []
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Extracting...", total=None)
+            for pf in scan_result.python_files:
+                pr = parser.parse_file(pf.path)
+                if pr and pr.has_ros2_imports():
+                    nodes = node_extractor.extract_from_file(pf.path, pf.package_name)
+                    all_nodes.extend(nodes)
+                    topic_extractor.add_nodes(nodes)
+            progress.update(task, completed=True)
+
+        topic_graph = topic_extractor.build()
+        console.print(f"  Code: {len(all_nodes)} nodes, {len(topic_graph.topics)} topics")
+
+        # HTTP communication detection (for HTTP validation)
+        http_comm_map = None
+        if check_http:
+            console.print("[bold]Phase 1.5: Detecting HTTP communication...[/bold]")
+            from robomind.http import (
+                HTTPEndpointExtractor,
+                HTTPClientExtractor,
+                build_communication_map,
+            )
+
+            endpoint_extractor = HTTPEndpointExtractor()
+            client_extractor = HTTPClientExtractor()
+            all_endpoints = []
+            all_clients = []
+
+            for pf in scan_result.python_files:
+                all_endpoints.extend(endpoint_extractor.extract_from_file(pf.path))
+                all_clients.extend(client_extractor.extract_from_file(pf.path))
+
+            http_comm_map = build_communication_map(all_endpoints, all_clients, topic_graph)
+            summary = http_comm_map.summary()
+            console.print(f"  HTTP: {summary['http_endpoints']} endpoints, "
+                         f"{summary['http_clients']} clients")
+
+        # Validate against live system
+        console.print("[bold]Phase 2: Validating against live system...[/bold]")
+        validator = LiveValidator(
+            all_nodes, topic_graph, ssh_host=ssh, http_comm_map=http_comm_map
+        )
+        result = validator.validate(check_http=check_http)
+
+        if not result.validated:
+            console.print(f"[bold red]Validation failed:[/bold red] {result.error}")
+            sys.exit(1)
+
+        console.print(f"  Live: {len(result.live_info.nodes)} nodes, "
+                     f"{len(result.live_info.topics)} topics")
+
+        # Display results
+        summary = result.summary()
+
+        table = Table(title="Validation Results")
+        table.add_column("Category", style="cyan")
+        table.add_column("Count", justify="right")
+
+        table.add_row("Total Differences", str(summary["total_diffs"]))
+        table.add_row("Critical", str(summary["by_severity"]["critical"]))
+        table.add_row("Errors", str(summary["by_severity"]["error"]))
+        table.add_row("Warnings", str(summary["by_severity"]["warning"]))
+        table.add_row("Info", str(summary["by_severity"]["info"]))
+
+        console.print(table)
+
+        # Show differences by type
+        if result.diffs:
+            console.print("\n[bold]Differences Found:[/bold]")
+
+            # Group by type
+            for severity in ["critical", "error", "warning"]:
+                diffs = [d for d in result.diffs if d.severity.value == severity]
+                if diffs:
+                    color = {"critical": "red", "error": "yellow", "warning": "cyan"}[severity]
+                    console.print(f"\n[{color}]{severity.upper()}:[/{color}]")
+                    for diff in diffs[:10]:
+                        console.print(f"  [{color}]\u2022[/{color}] {diff.message}")
+                        if verbose and diff.recommendation:
+                            console.print(f"    [dim]\u2192 {diff.recommendation}[/dim]")
+                    if len(diffs) > 10:
+                        console.print(f"    ... and {len(diffs) - 10} more")
+
+        # Output to JSON
+        if output:
+            output_path = Path(output)
+            with open(output_path, "w") as f:
+                json.dump(result.to_dict(), f, indent=2)
+            console.print(f"\n[green]Results saved to: {output_path}[/green]")
+
+        # Export Prometheus metrics
+        if export_prometheus:
+            from robomind.validators.prometheus_exporter import export_prometheus_metrics
+
+            prom_path = Path(export_prometheus)
+            http_health_results = None
+            if result.live_info and result.live_info.http_endpoints:
+                http_health_results = {
+                    ep: hr.to_dict()
+                    for ep, hr in result.live_info.http_endpoints.items()
+                }
+
+            success = export_prometheus_metrics(
+                output_path=prom_path,
+                nodes=all_nodes,
+                topic_graph=topic_graph,
+                validation_result=result,
+                http_comm_map=http_comm_map,
+                http_health_results=http_health_results,
+                project_name=project_path.name,
+            )
+            if success:
+                console.print(f"[green]Prometheus metrics: {prom_path}[/green]")
+            else:
+                console.print(f"[yellow]Failed to export Prometheus metrics[/yellow]")
+
+        if result.has_critical:
+            console.print(f"\n[bold red]Critical issues found![/bold red]")
+            sys.exit(2)
+        elif result.has_errors:
+            console.print(f"\n[bold yellow]Errors found, review recommended.[/bold yellow]")
+        else:
+            console.print(f"\n[bold green]Validation complete![/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option("--output", "-o", type=click.Path(), default="ARCHITECTURE_REPORT.md",
+              help="Output markdown file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+def report(project_path: str, output: str, exclude: tuple,
+           use_default_excludes: bool, verbose: bool):
+    """Generate a comprehensive markdown report.
+
+    Creates a detailed architecture report including:
+    - Executive summary
+    - Critical issues
+    - Namespace analysis
+    - Coupling hotspots
+    - Node inventory
+    - Recommendations
+
+    \b
+    Examples:
+        robomind report ~/betaray
+        robomind report ~/betaray -o my_report.md
+    """
+    from robomind.core.scanner import ProjectScanner
+    from robomind.core.parser import PythonParser
+    from robomind.ros2.node_extractor import ROS2NodeExtractor
+    from robomind.ros2.topic_extractor import TopicExtractor
+    from robomind.core.graph import build_system_graph
+    from robomind.analyzers.coupling import analyze_coupling
+    from robomind.reporters.markdown_reporter import generate_report
+
+    project_path = Path(project_path).resolve()
+    output_path = Path(output)
+    exclude_patterns = list(exclude) if exclude else None
+
+    console.print(f"\n[bold blue]RoboMind Report Generator[/bold blue]")
+    console.print(f"Project: [cyan]{project_path}[/cyan]")
+    console.print(f"Output:  [cyan]{output_path}[/cyan]")
+    if use_default_excludes:
+        console.print(f"Default excludes: [green]enabled[/green]")
+    console.print()
+
+    try:
+        # Phase 1: Extract
+        console.print("[bold]Phase 1: Analyzing project...[/bold]")
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
+        scan_result = scanner.scan()
+
+        parser = PythonParser()
+        node_extractor = ROS2NodeExtractor()
+        topic_extractor = TopicExtractor()
+        all_nodes = []
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Extracting...", total=len(scan_result.python_files))
+            for pf in scan_result.python_files:
+                pr = parser.parse_file(pf.path)
+                if pr and pr.has_ros2_imports():
+                    nodes = node_extractor.extract_from_file(pf.path, pf.package_name)
+                    all_nodes.extend(nodes)
+                    topic_extractor.add_nodes(nodes)
+                progress.advance(task)
+
+        topic_graph = topic_extractor.build()
+        console.print(f"  Found {len(all_nodes)} nodes, {len(topic_graph.topics)} topics")
+
+        # Phase 2: Build graph and coupling
+        console.print("[bold]Phase 2: Building graph...[/bold]")
+        system_graph = build_system_graph(all_nodes, topic_graph)
+        coupling = analyze_coupling(all_nodes, topic_graph)
+        console.print(f"  Graph: {system_graph.stats()['total_nodes']} nodes, "
+                     f"{system_graph.stats()['total_edges']} edges")
+
+        # Phase 3: Generate report
+        console.print("[bold]Phase 3: Generating report...[/bold]")
+        result = generate_report(
+            output_path=output_path,
+            nodes=all_nodes,
+            topic_graph=topic_graph,
+            system_graph=system_graph,
+            coupling=coupling,
+            project_name=project_path.name,
+            project_path=str(project_path),
+        )
+
+        if result.success:
+            console.print(f"  [green]Report generated:[/green] {result.output_path}")
+            console.print(f"  Size: {result.stats.get('file_size', 0):,} bytes")
+            console.print(f"  Critical issues: {result.stats.get('critical_issues', 0)}")
+            console.print(f"\n[bold green]Report complete![/bold green]")
+        else:
+            console.print(f"[bold red]Report failed:[/bold red] {result.error}")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option("--from", "source", type=str, help="Source node name")
+@click.option("--to", "target", type=str, help="Target node name")
+@click.option("--topic", type=str, help="Trace all flows through a topic")
+@click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
+@click.option("--mermaid", is_flag=True, help="Output Mermaid diagram syntax")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+def trace(project_path: str, source: Optional[str], target: Optional[str],
+          topic: Optional[str], output: Optional[str], exclude: tuple,
+          use_default_excludes: bool, mermaid: bool, verbose: bool):
+    """Trace data flow paths through the system.
+
+    Find all paths between two nodes, or trace all consumers of a topic.
+
+    \b
+    Examples:
+        robomind trace ~/betaray --from sensor_node --to controller
+        robomind trace ~/betaray --topic /cmd_vel
+        robomind trace ~/betaray --from voice_node --to motor_node --mermaid
+    """
+    from robomind.core.scanner import ProjectScanner
+    from robomind.core.parser import PythonParser
+    from robomind.ros2.node_extractor import ROS2NodeExtractor
+    from robomind.ros2.topic_extractor import TopicExtractor
+    from robomind.analyzers.flow_tracer import FlowTracer
+
+    project_path = Path(project_path).resolve()
+    exclude_patterns = list(exclude) if exclude else None
+
+    # Validate inputs
+    if topic and (source or target):
+        console.print("[bold red]Error:[/bold red] Use either --topic OR --from/--to, not both")
+        sys.exit(1)
+
+    if not topic and not (source and target):
+        console.print("[bold red]Error:[/bold red] Specify --from and --to, or --topic")
+        sys.exit(1)
+
+    console.print(f"\n[bold blue]RoboMind Flow Tracer[/bold blue]")
+    console.print(f"Project: [cyan]{project_path}[/cyan]")
+    if topic:
+        console.print(f"Tracing: [cyan]topic {topic}[/cyan]")
+    else:
+        console.print(f"Tracing: [cyan]{source}[/cyan] -> [cyan]{target}[/cyan]")
+    console.print()
+
+    try:
+        # Extract nodes
+        console.print("[bold]Phase 1: Analyzing project...[/bold]")
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
+        scan_result = scanner.scan()
+
+        parser = PythonParser()
+        node_extractor = ROS2NodeExtractor()
+        topic_extractor = TopicExtractor()
+        all_nodes = []
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Extracting...", total=None)
+            for pf in scan_result.python_files:
+                pr = parser.parse_file(pf.path)
+                if pr and pr.has_ros2_imports():
+                    nodes = node_extractor.extract_from_file(pf.path, pf.package_name)
+                    all_nodes.extend(nodes)
+                    topic_extractor.add_nodes(nodes)
+            progress.update(task, completed=True)
+
+        topic_graph = topic_extractor.build()
+        console.print(f"  Found {len(all_nodes)} nodes, {len(topic_graph.topics)} topics")
+
+        # Trace
+        console.print("[bold]Phase 2: Tracing flow...[/bold]")
+        tracer = FlowTracer(all_nodes, topic_graph)
+
+        if topic:
+            result = tracer.trace_topic(topic)
+        else:
+            result = tracer.trace(source, target)
+
+        if result.error:
+            console.print(f"[bold red]Error:[/bold red] {result.error}")
+
+            # Suggest similar nodes
+            if "not found" in result.error:
+                node_names = [n.name for n in all_nodes]
+                search_term = source if "Source" in result.error else target
+                matches = [n for n in node_names if search_term.lower() in n.lower()]
+                if matches:
+                    console.print("\n[yellow]Did you mean one of these?[/yellow]")
+                    for m in matches[:10]:
+                        console.print(f"  {m}")
+
+            sys.exit(1)
+
+        # Display results
+        summary = result.summary()
+
+        console.print(f"\n[green]Found {summary['paths_found']} paths[/green]")
+
+        if result.bottlenecks:
+            console.print(f"\n[yellow]Bottlenecks (single points of failure):[/yellow]")
+            for bn in result.bottlenecks:
+                console.print(f"  [yellow]\u2022[/yellow] {bn}")
+
+        # Show paths
+        console.print(f"\n[bold]Paths:[/bold]")
+        for i, path in enumerate(result.paths[:10], 1):
+            console.print(f"\n  [cyan]Path {i}[/cyan] (length {path.length}):")
+            console.print(f"    {' -> '.join(path.nodes)}")
+            if verbose and path.topics:
+                console.print(f"    Topics: {' -> '.join(path.topics)}")
+
+        if len(result.paths) > 10:
+            console.print(f"\n  ... and {len(result.paths) - 10} more paths")
+
+        # Mermaid output
+        if mermaid and result.paths:
+            console.print(f"\n[bold]Mermaid Diagram:[/bold]")
+            console.print("```mermaid")
+            console.print(result.paths[0].to_mermaid())
+            console.print("```")
+
+        # Flow summary
+        if verbose:
+            flow_summary = tracer.get_flow_summary()
+            console.print(f"\n[bold]System Flow Summary:[/bold]")
+            console.print(f"  Entry points: {', '.join(flow_summary['entry_points'][:5])}")
+            console.print(f"  Exit points: {', '.join(flow_summary['exit_points'][:5])}")
+            console.print(f"  High traffic nodes:")
+            for item in flow_summary['high_traffic_nodes'][:5]:
+                console.print(f"    {item['node']}: {item['connections']} connections")
+
+        # Output to JSON
+        if output:
+            output_path = Path(output)
+            with open(output_path, "w") as f:
+                json.dump(result.to_dict(), f, indent=2)
+            console.print(f"\n[green]Results saved to: {output_path}[/green]")
+
+        console.print(f"\n[bold green]Trace complete![/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
 def info():
     """Show information about RoboMind."""
     from robomind import __version__
@@ -956,15 +1752,22 @@ def info():
     console.print("  [green]\u2713[/green] Export YAML AI context (token-efficient)")
     console.print("  [green]\u2713[/green] Generate HTML visualization (D3.js interactive)")
     console.print("  [green]\u2713[/green] SSH remote analysis (distributed systems)")
-
-    console.print("\n[bold]Test Coverage:[/bold] 192 tests passing")
+    console.print("  [green]\u2713[/green] Validate against live ROS2 system")
+    console.print("  [green]\u2713[/green] Generate markdown architecture reports")
+    console.print("  [green]\u2713[/green] Trace data flow paths between nodes")
+    console.print("  [green]\u2713[/green] Default excludes (archive/backup/test/deprecated)")
+    console.print("  [green]\u2713[/green] Confidence scoring (filter false positives)")
 
     console.print("\n[bold]Quick Start:[/bold]")
     console.print("  robomind scan ~/my_robot_project")
     console.print("  robomind analyze ~/my_robot_project -o ./analysis/")
+    console.print("  robomind analyze ~/project --min-confidence 0.5  # filter low-confidence")
     console.print("  robomind launch ~/my_robot_project -v")
     console.print("  robomind graph ~/my_robot_project --coupling -v")
     console.print("  robomind visualize ~/my_robot_project -o viz.html --open")
+    console.print("  robomind validate ~/my_robot_project")
+    console.print("  robomind report ~/my_robot_project -o REPORT.md")
+    console.print("  robomind trace ~/project --from sensor --to controller")
     console.print("  robomind remote robot@jetson.local --ros2-info")
 
     console.print("\n[bold]Distributed Analysis:[/bold]")

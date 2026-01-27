@@ -64,6 +64,7 @@ class YAMLExporter:
         self.launch_topology: Optional[LaunchTopology] = None
         self.parameters: Optional[ParameterCollection] = None
         self.hardware_targets: Dict[str, List[str]] = {}  # hardware -> node names
+        self.http_comm_map = None  # Optional HTTP communication map
 
     def set_project_info(self, name: str, version: str = "auto"):
         """Set project metadata."""
@@ -100,6 +101,10 @@ class YAMLExporter:
     def set_hardware_mapping(self, mapping: Dict[str, List[str]]):
         """Set hardware target to node mapping."""
         self.hardware_targets = mapping
+
+    def set_http_communication(self, http_comm_map):
+        """Set HTTP communication map."""
+        self.http_comm_map = http_comm_map
 
     def _estimate_tokens(self, text: str) -> int:
         """Rough token estimate (4 chars per token average)."""
@@ -353,6 +358,49 @@ class YAMLExporter:
 
             context["launch"] = launch_info
 
+        # HTTP Communication
+        if self.http_comm_map:
+            http_info = {}
+
+            # HTTP endpoints (servers)
+            if self.http_comm_map.http_endpoints:
+                endpoints = {}
+                for ep in self.http_comm_map.http_endpoints[:30]:  # Limit
+                    key = f"{ep.method} {ep.path}"
+                    endpoints[key] = {
+                        "framework": ep.framework,
+                        "file": str(Path(ep.file_path).name) if ep.file_path else None,
+                    }
+                    if ep.handler_name:
+                        endpoints[key]["handler"] = ep.handler_name
+                http_info["endpoints"] = endpoints
+
+            # HTTP clients (outbound calls)
+            if self.http_comm_map.http_clients:
+                clients = {}
+                for client in self.http_comm_map.http_clients[:30]:  # Limit
+                    url = client.target_url or client.target_variable or "dynamic"
+                    key = f"{client.method} {url}"
+                    if key not in clients:
+                        clients[key] = {
+                            "library": client.library,
+                            "file": str(Path(client.file_path).name) if client.file_path else None,
+                        }
+                        if client.context:
+                            clients[key]["context"] = client.context
+                http_info["clients"] = clients
+
+            # Communication summary
+            summary = self.http_comm_map.summary()
+            http_info["summary"] = {
+                "endpoints": summary["http_endpoints"],
+                "clients": summary["http_clients"],
+                "target_hosts": summary["http_target_hosts"][:10],  # Limit
+                "cross_system_protocol": summary["cross_system_protocol"],
+            }
+
+            context["http_communication"] = http_info
+
         return context
 
     def export_system_context(self, output_path: Path) -> ExportResult:
@@ -422,6 +470,7 @@ def export_yaml_context(
     topic_graph: Optional[TopicGraphResult] = None,
     launch_topology: Optional[LaunchTopology] = None,
     parameters: Optional[ParameterCollection] = None,
+    http_comm_map=None,
     project_name: str = "Unknown",
     project_version: str = "auto",
     hardware_mapping: Optional[Dict[str, List[str]]] = None,
@@ -437,6 +486,7 @@ def export_yaml_context(
         topic_graph: Optional TopicGraphResult
         launch_topology: Optional LaunchTopology
         parameters: Optional ParameterCollection
+        http_comm_map: Optional HTTP CommunicationMap
         project_name: Name of the project
         project_version: Version string
         hardware_mapping: Dict mapping hardware targets to node names
@@ -458,6 +508,8 @@ def export_yaml_context(
         exporter.set_launch_topology(launch_topology)
     if parameters:
         exporter.set_parameters(parameters)
+    if http_comm_map:
+        exporter.set_http_communication(http_comm_map)
     if hardware_mapping:
         exporter.set_hardware_mapping(hardware_mapping)
 

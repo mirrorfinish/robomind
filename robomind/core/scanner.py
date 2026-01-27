@@ -19,6 +19,81 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+# Default exclude patterns for dead/archived code (applied unless --no-default-excludes)
+DEFAULT_EXCLUDE_PATTERNS = [
+    # Archive and backup directories
+    "**/archive/**",
+    "**/backup/**",
+    "**/old/**",
+    "**/deprecated/**",
+    "**/obsolete/**",
+    "**/unused/**",
+    "**/legacy/**",
+    # Deprecated file suffixes
+    "**/*_old.py",
+    "**/*_backup.py",
+    "**/*_deprecated.py",
+    "**/*_legacy.py",
+    "**/*_unused.py",
+    "**/*_bak.py",
+    "**/*.bak",
+    "**/*.orig",
+    # Test directories (usually not production code)
+    "**/test/**",
+    "**/tests/**",
+    "**/testing/**",
+    # Examples and docs
+    "**/examples/**",
+    "**/example/**",
+    "**/docs/**",
+    "**/documentation/**",
+    # Build artifacts
+    "**/__pycache__/**",
+    "**/build/**",
+    "**/install/**",
+    "**/log/**",
+    "**/logs/**",
+    "**/.git/**",
+    "**/.venv/**",
+    "**/venv/**",
+    "**/*.egg-info/**",
+    "**/dist/**",
+    # IDE and temp
+    "**/.idea/**",
+    "**/.vscode/**",
+    "**/*.pyc",
+]
+
+
+# Patterns that indicate a file/directory is likely dead code
+DEAD_CODE_INDICATORS = {
+    # Directory names (strong indicators)
+    "archive": -0.4,
+    "backup": -0.4,
+    "old": -0.3,
+    "deprecated": -0.4,
+    "obsolete": -0.4,
+    "unused": -0.4,
+    "legacy": -0.3,
+    "test": -0.2,
+    "tests": -0.2,
+    "examples": -0.2,
+    "example": -0.2,
+}
+
+# File name patterns that indicate dead code
+DEAD_CODE_FILE_PATTERNS = {
+    "_old.py": -0.3,
+    "_backup.py": -0.3,
+    "_deprecated.py": -0.4,
+    "_legacy.py": -0.3,
+    "_unused.py": -0.4,
+    "_bak.py": -0.3,
+    "_v1.py": -0.1,  # Weak indicator
+    "_v2.py": -0.1,
+}
+
+
 @dataclass
 class ProjectFile:
     """Represents a single file in the project."""
@@ -30,6 +105,29 @@ class ProjectFile:
     package_name: Optional[str] = None
     lines_of_code: int = 0
     last_modified: Optional[str] = None
+    # Confidence-related fields
+    location_confidence: float = 1.0  # Adjusted based on directory location
+    dead_code_indicators: List[str] = field(default_factory=list)
+
+    def get_location_confidence_penalty(self) -> float:
+        """Calculate confidence penalty based on file location."""
+        penalty = 0.0
+        path_str = str(self.relative_path).lower()
+        path_parts = path_str.split("/")
+
+        # Check directory names
+        for part in path_parts[:-1]:  # Exclude filename
+            if part in DEAD_CODE_INDICATORS:
+                penalty += DEAD_CODE_INDICATORS[part]
+
+        # Check filename patterns
+        filename = path_parts[-1] if path_parts else ""
+        for pattern, pen in DEAD_CODE_FILE_PATTERNS.items():
+            if filename.endswith(pattern):
+                penalty += pen
+                break
+
+        return max(-0.8, penalty)  # Cap at -0.8 (don't go below 0.2 base confidence)
 
 
 @dataclass
@@ -112,6 +210,7 @@ class ProjectScanner:
         exclude_files: Optional[Set[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
         include_tests: bool = True,
+        use_default_excludes: bool = False,
     ):
         """
         Initialize project scanner.
@@ -122,6 +221,7 @@ class ProjectScanner:
             exclude_files: Additional file patterns to exclude
             exclude_patterns: Glob patterns for paths to exclude (e.g., "*/archive/*")
             include_tests: Whether to include test files
+            use_default_excludes: Whether to apply DEFAULT_EXCLUDE_PATTERNS automatically
         """
         self.root_path = Path(root_path).resolve()
 
@@ -143,11 +243,18 @@ class ProjectScanner:
         self.exclude_files = exclude_files or set()
 
         # Glob patterns for path exclusion (e.g., "*/archive/*", "**/backup/**")
-        self.exclude_patterns = exclude_patterns or []
+        self.exclude_patterns = list(exclude_patterns) if exclude_patterns else []
+
+        # Apply default excludes if enabled
+        self.use_default_excludes = use_default_excludes
+        if use_default_excludes:
+            self.exclude_patterns.extend(DEFAULT_EXCLUDE_PATTERNS)
 
         logger.info(f"ProjectScanner initialized for: {self.root_path}")
-        if self.exclude_patterns:
-            logger.info(f"  Exclude patterns: {self.exclude_patterns}")
+        if use_default_excludes:
+            logger.info(f"  Using default excludes (archive, backup, test, etc.)")
+        if exclude_patterns:
+            logger.info(f"  Additional exclude patterns: {exclude_patterns}")
 
     def should_ignore_dir(self, dir_name: str) -> bool:
         """Check if a directory should be ignored."""
@@ -278,6 +385,26 @@ class ProjectScanner:
         except Exception:
             return 0
 
+    def _get_dead_code_indicators(self, relative_path: Path) -> List[str]:
+        """Get list of dead code indicators found in the file path."""
+        indicators = []
+        path_str = str(relative_path).lower()
+        path_parts = path_str.split("/")
+
+        # Check directory names
+        for part in path_parts[:-1]:
+            if part in DEAD_CODE_INDICATORS:
+                indicators.append(f"directory:{part}")
+
+        # Check filename patterns
+        filename = path_parts[-1] if path_parts else ""
+        for pattern in DEAD_CODE_FILE_PATTERNS:
+            if filename.endswith(pattern):
+                indicators.append(f"filename:{pattern}")
+                break
+
+        return indicators
+
     def scan(self) -> ScanResult:
         """
         Perform complete scan of project directory.
@@ -354,6 +481,13 @@ class ProjectScanner:
                         lines_of_code=loc,
                         last_modified=last_modified,
                     )
+                    # Calculate location-based confidence penalty
+                    penalty = pf.get_location_confidence_penalty()
+                    pf.location_confidence = max(0.2, 1.0 + penalty)
+
+                    # Track dead code indicators for this file
+                    pf.dead_code_indicators = self._get_dead_code_indicators(relative_path)
+
                     result.python_files.append(pf)
                     result.total_files += 1
 
