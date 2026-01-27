@@ -110,6 +110,7 @@ class JSONExporter:
         self.launch_topology: Optional[LaunchTopology] = None
         self.parameters: Optional[ParameterCollection] = None
         self.http_comm_map = None  # Optional HTTP communication map
+        self.external_dependencies: List[Dict] = []  # External ROS2 packages
 
     def set_metadata(
         self,
@@ -157,6 +158,10 @@ class JSONExporter:
     def set_http_communication(self, http_comm_map):
         """Set HTTP communication map."""
         self.http_comm_map = http_comm_map
+
+    def set_external_dependencies(self, external_deps: List[Dict]):
+        """Set external ROS2 package dependencies (from launch files)."""
+        self.external_dependencies = external_deps
 
     def _update_summary_from_nodes(self):
         """Update summary statistics from nodes."""
@@ -236,6 +241,10 @@ class JSONExporter:
         if self.http_comm_map:
             result["http_communication"] = self.http_comm_map.to_dict()
 
+        # External dependencies (from launch files, not in project)
+        if self.external_dependencies:
+            result["external_dependencies"] = self.external_dependencies
+
         return result
 
     def export(self, output_path: Path, indent: int = 2) -> ExportResult:
@@ -295,6 +304,7 @@ def export_analysis_json(
     launch_topology: Optional[LaunchTopology] = None,
     parameters: Optional[ParameterCollection] = None,
     http_comm_map=None,
+    external_dependencies: Optional[List[Dict]] = None,
     project_name: str = "Unknown",
     project_path: str = "",
 ) -> ExportResult:
@@ -310,6 +320,7 @@ def export_analysis_json(
         launch_topology: Optional LaunchTopology
         parameters: Optional ParameterCollection
         http_comm_map: Optional HTTP CommunicationMap
+        external_dependencies: Optional list of external ROS2 packages
         project_name: Name of the project
         project_path: Path to the project
 
@@ -332,6 +343,8 @@ def export_analysis_json(
         exporter.set_parameters(parameters)
     if http_comm_map:
         exporter.set_http_communication(http_comm_map)
+    if external_dependencies:
+        exporter.set_external_dependencies(external_dependencies)
 
     return exporter.export(output_path)
 

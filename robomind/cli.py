@@ -314,6 +314,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
         # Phase 1.5: Deployment awareness (if manifest or launch tracing provided)
         deployment_info = None
         traced_nodes = set()  # Node names that are actually deployed
+        external_dependencies = []  # External packages not in project
 
         if deployment_manifest or trace_launch:
             console.print("[bold]Phase 1.5: Analyzing deployment...[/bold]")
@@ -336,10 +337,30 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 trace = trace_launch_file(Path(trace_launch), project_root=project_path)
                 console.print(f"  Traced {trace.summary()['total_nodes']} nodes from launch file")
 
-                # Add traced node names
+                # Get project packages for comparison (packages is a dict with names as keys)
+                project_packages = set(scan_result.packages.keys())
+
+                # Add traced node names and detect external dependencies
                 for node in trace.nodes:
                     traced_nodes.add(node.name)
                     traced_nodes.add(node.executable)
+
+                    # Check if package is external (not in project)
+                    if node.package and node.package not in project_packages:
+                        ext_info = {
+                            "package": node.package,
+                            "executable": node.executable,
+                            "name": node.name,
+                        }
+                        # Avoid duplicates
+                        if not any(e["package"] == node.package and e["executable"] == node.executable
+                                   for e in external_dependencies):
+                            external_dependencies.append(ext_info)
+
+                if external_dependencies:
+                    console.print(f"  [cyan]External dependencies: {len(external_dependencies)}[/cyan]")
+                    for ext in external_dependencies:
+                        console.print(f"    - {ext['package']}/{ext['executable']}")
 
                 if trace.errors:
                     for error in trace.errors[:3]:
@@ -660,6 +681,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 project_name=project_path.name,
                 project_path=str(project_path),
                 http_comm_map=http_comm_map,
+                external_dependencies=external_dependencies if external_dependencies else None,
             )
 
             if result.success:
