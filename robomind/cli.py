@@ -1805,6 +1805,181 @@ def trace(project_path: str, source: Optional[str], target: Optional[str],
 
 
 @main.command()
+@click.argument("project_path", type=click.Path(exists=True))
+@click.option("-o", "--output", type=click.Path(), help="Output file for recommendations (JSON)")
+@click.option("--trace-launch", type=click.Path(exists=True), help="Filter to nodes deployed by this launch file")
+@click.option("--min-severity", type=click.Choice(["critical", "high", "medium", "low"]),
+              default="low", help="Minimum severity to report")
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
+def recommend(project_path: str, output: str, trace_launch: str, min_severity: str, verbose: bool):
+    """
+    Generate actionable recommendations for improving ROS2 code.
+
+    Analyzes the codebase for issues and suggests specific fixes:
+
+    \b
+    - CRITICAL: Safety issues (e.g., emergency stop inconsistencies)
+    - HIGH: Bugs that will cause problems (e.g., relative topic names)
+    - MEDIUM: Code quality issues (e.g., orphaned subscribers)
+    - LOW: Style/consistency suggestions
+
+    Examples:
+
+    \b
+      robomind recommend ~/my_robot
+      robomind recommend ~/project --min-severity high
+      robomind recommend ~/project --trace-launch launch/robot.launch.py
+      robomind recommend ~/project -o recommendations.json
+    """
+    import json
+    from pathlib import Path
+    from robomind.core.scanner import ProjectScanner
+    from robomind.ros2.node_extractor import ROS2NodeExtractor
+    from robomind.ros2.topic_extractor import TopicExtractor
+    from robomind.analyzers.recommendations import generate_recommendations, Severity
+
+    project_path = Path(project_path).resolve()
+
+    console.print(f"\n[bold blue]RoboMind Recommendations[/bold blue]")
+    console.print(f"Project: {project_path}")
+    if trace_launch:
+        console.print(f"Launch filter: {trace_launch}")
+    console.print()
+
+    try:
+        # Phase 1: Scan
+        console.print("[bold]Phase 1: Scanning project...[/bold]")
+        scanner = ProjectScanner(project_path)
+        scan = scanner.scan()
+        console.print(f"  Found {len(scan.python_files)} Python files")
+
+        # Find ROS2 files
+        ros2_files = []
+        for pf in scan.python_files:
+            try:
+                with open(pf.path, 'r') as f:
+                    content = f.read()
+                if 'rclpy' in content or 'from rclpy' in content:
+                    ros2_files.append(pf.path)
+            except Exception:
+                pass
+        console.print(f"  Found {len(ros2_files)} ROS2 files")
+
+        # Phase 2: Extract nodes
+        console.print("[bold]Phase 2: Extracting ROS2 nodes...[/bold]")
+        extractor = ROS2NodeExtractor()
+        nodes = []
+        for f in ros2_files:
+            nodes.extend(extractor.extract_from_file(f))
+        console.print(f"  Found {len(nodes)} ROS2 nodes")
+
+        # Optional: Filter by launch file
+        if trace_launch:
+            from robomind.deployment import trace_launch_file
+
+            console.print("[bold]Phase 2.5: Filtering to deployed nodes...[/bold]")
+            trace = trace_launch_file(Path(trace_launch), project_root=project_path)
+            traced_names = set()
+            for node in trace.nodes:
+                traced_names.add(node.name.lower().replace("_", "").replace("-", ""))
+                traced_names.add(node.executable.lower().replace("_", "").replace("-", ""))
+
+            def is_deployed(node):
+                node_names = [
+                    node.name.lower().replace("_", "").replace("-", ""),
+                    (node.class_name or "").lower().replace("_", "").replace("-", ""),
+                    Path(node.file_path).stem.lower().replace("_", "").replace("-", "") if node.file_path else "",
+                ]
+                for traced in traced_names:
+                    for node_name in node_names:
+                        if node_name and (traced in node_name or node_name in traced):
+                            return True
+                return False
+
+            original_count = len(nodes)
+            nodes = [n for n in nodes if is_deployed(n)]
+            console.print(f"  Filtered to {len(nodes)} deployed nodes (from {original_count})")
+
+        # Phase 3: Build topic graph
+        console.print("[bold]Phase 3: Building topic graph...[/bold]")
+        topic_ext = TopicExtractor()
+        topic_ext.add_nodes(nodes)
+        topic_graph = topic_ext.build()
+        console.print(f"  Found {len(topic_graph.topics)} topics")
+
+        # Phase 4: Generate recommendations
+        console.print("[bold]Phase 4: Analyzing for issues...[/bold]")
+        report = generate_recommendations(nodes, topic_graph)
+
+        # Filter by severity
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        min_level = severity_order[min_severity]
+        filtered = [r for r in report.recommendations
+                   if severity_order[r.severity.value] <= min_level]
+
+        console.print(f"  Found {len(filtered)} issues (severity >= {min_severity})")
+        console.print()
+
+        # Display recommendations
+        console.print("[bold]=== RECOMMENDATIONS ===[/bold]\n")
+
+        severity_colors = {
+            "critical": "red bold",
+            "high": "yellow",
+            "medium": "cyan",
+            "low": "dim",
+        }
+
+        for i, rec in enumerate(filtered, 1):
+            color = severity_colors[rec.severity.value]
+            console.print(f"[{color}]{i}. [{rec.severity.value.upper()}] {rec.title}[/{color}]")
+            console.print(f"   [dim]Category:[/dim] {rec.category.value}")
+            console.print(f"   [dim]Impact:[/dim] {rec.impact}")
+
+            if rec.affected_nodes and verbose:
+                console.print(f"   [dim]Nodes:[/dim] {', '.join(rec.affected_nodes[:5])}")
+
+            if rec.fixes:
+                console.print(f"   [green]Fixes available: {len(rec.fixes)}[/green]")
+                for fix in rec.fixes[:3]:
+                    rel_path = Path(fix.file_path).name
+                    console.print(f"     [dim]{rel_path}:{fix.line_number}[/dim]")
+                    console.print(f"       {fix.original} [green]->[/green] {fix.replacement}")
+                if len(rec.fixes) > 3:
+                    console.print(f"     [dim]... and {len(rec.fixes) - 3} more fixes[/dim]")
+            console.print()
+
+        # Summary
+        by_severity = {}
+        for rec in filtered:
+            s = rec.severity.value
+            by_severity[s] = by_severity.get(s, 0) + 1
+
+        console.print("[bold]=== SUMMARY ===[/bold]")
+        console.print(f"Total issues: {len(filtered)}")
+        for sev in ["critical", "high", "medium", "low"]:
+            if sev in by_severity:
+                console.print(f"  {sev.upper()}: {by_severity[sev]}")
+        fixable = sum(1 for r in filtered if r.fixes)
+        console.print(f"Auto-fixable: {fixable}")
+
+        # Save to file
+        if output:
+            output_path = Path(output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w') as f:
+                json.dump(report.to_dict(), f, indent=2)
+            console.print(f"\n[green]Saved to: {output_path}[/green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
 def info():
     """Show information about RoboMind."""
     from robomind import __version__
