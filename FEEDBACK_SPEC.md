@@ -1,589 +1,502 @@
-# RoboMind Feedback Specification
+# RoboMind Feedback Specification v2
 
-## Document Purpose
+## Validation Context
 
-This specification provides developer feedback for improving RoboMind based on real-world validation against the NEXUS/BetaRay robotics system - a production 4-Jetson distributed robot architecture.
+This feedback is based on live validation against **NEXUS/BetaRay** - a production 4-Jetson distributed robot system running 16+ HTTP services on Thor with internal ROS2 on Nav Jetson.
 
----
-
-## Executive Summary
-
-**Core Problem**: RoboMind v1.0 produced an 80% false-positive rate when analyzing BetaRay/NEXUS because it:
-
-1. Analyzed dead/archived code alongside production code
-2. Only detected ROS2 pub/sub, missing HTTP inter-Jetson communication
-3. Reported all findings with equal weight regardless of confidence
-4. Had no mechanism to validate against live running systems
-
-**The one real finding** (emergency stop topic mismatch) was buried among 50+ false positives, making the report operationally useless without manual validation.
+**Validation Results**:
+- RoboMind reported 130 nodes, 57 critical issues
+- Live system runs ~19 ROS2 nodes on Nav Jetson
+- **96% false positive rate** - only 2 actionable issues found
 
 ---
 
-## Validation Results Summary
+## Problem Statement
 
-| Finding | RoboMind Severity | Actual Status | Production Risk |
-|---------|-------------------|---------------|-----------------|
-| Emergency Stop mismatch | CRITICAL | **REAL** | HIGH |
-| Vision→AI pipeline | CRITICAL | DEAD CODE | None |
-| Voice dialogue broken | HIGH | DEAD CODE | None |
-| Guardian monitoring blind | HIGH | DEAD CODE | None |
-| IMU/Odom fusion broken | HIGH | DEAD CODE | None |
-| 46 topics missing slashes | MEDIUM | Mostly dead | Minimal |
-| Duplicate nodes (4 copies) | INFO | FALSE POSITIVE | None |
+RoboMind v1.0 produces unusable output on production robotics systems because it:
 
-**Only 1 of 7 major findings was a real production issue.**
+1. **Analyzes ALL code** including `build/`, `install/`, archives, and experiments
+2. **Counts duplicates as separate nodes** (same file in src/build/install = 3 nodes)
+3. **Cannot detect HTTP communication** - misses the actual inter-system protocol
+4. **No deployment awareness** - treats dead code the same as production code
+5. **No runtime validation** - static analysis can't determine what actually runs
 
 ---
 
-## Root Cause Analysis
+## Feature 1: Build Artifact Exclusion
 
-### Why RoboMind Got It Wrong
-
-#### 1. No Understanding of HTTP Architecture
-
-NEXUS evolved from pure ROS2 to HTTP-based inter-Jetson communication:
+### Problem
+RoboMind found 76 nodes in "unknown" package - these are duplicate definitions:
 
 ```
-Thor (main brain)     → HTTP APIs :8087-8096, vLLM :30000
-Nav Jetson            → ROS2 DOMAIN_ID=0 + Canary HTTP :8081
-Vision Jetson         → HTTP :9091 (camera, YOLO) - NO ROS2 external
-AI Jetson             → HTTP :8080 (LLM queries) - NO ROS2 external
-Guardian              → HTTP-based Observatory polling - NO ROS2
+betaray_motor_controller  ← src/betaray_motors/.../motor_controller_node.py
+betaray_motor_controller  ← build/betaray_motors/.../motor_controller_node.py
+betaray_motor_controller  ← install/betaray_motors/.../motor_controller_node.py
 ```
 
-**Cross-Jetson = HTTP. ROS2 is internal to each Jetson only.**
+### Solution
 
-RoboMind only sees Python files with `create_subscription()` calls and assumes ROS2 is the communication layer.
+**Default excludes** (always applied unless `--no-default-excludes`):
 
-#### 2. Analyzes ALL Code, Not Deployed Code
+```python
+DEFAULT_EXCLUDES = [
+    "**/build/**",
+    "**/install/**",
+    "**/log/**",
+    "**/__pycache__/**",
+    "**/*.egg-info/**",
+    "**/archive/**",
+    "**/backup/**",
+    "**/old/**",
+    "**/deprecated/**",
+    "**/*_backup.py",
+    "**/*_old.py",
+    "**/*_backup_*.py",
+]
+```
 
-The codebase contains:
-- `nexus_system/` - HTTP orchestration (production)
-- `Betaray_Dual_v1/` - Mixed ROS2/HTTP (partially production)
-- Archive folders, experiments, dead branches
-
-RoboMind treated a deprecated `guardian_bridge.py` (dead code) the same as `motor_controller_node.py` (actively running).
-
-#### 3. No Runtime Validation
-
-Static analysis cannot determine:
-- Which systemd services are enabled
-- Which ROS2 nodes actually launch
-- Whether topics have active publishers/subscribers
+**Expected impact**: Reduces 130 nodes → ~54 nodes (58% reduction)
 
 ---
 
-## Feature Requests
+## Feature 2: Launch File Tracing
 
-### Feature 1: Deployment Awareness
+### Problem
+RoboMind reports all nodes found in Python files. Only ~19 actually launch via `betaray_navigation_jetson.launch.py`.
 
-#### 1.1 Deployment Manifest Support
-
-**Flag**: `--deployment-manifest <file>`
-
-Accept a YAML file describing what actually runs:
-
-```yaml
-# deployment.yaml
-jetsons:
-  nav_jetson:
-    hostname: betaray-nav.local
-    ros_domain_id: 0
-    systemd_services:
-      - betaray-navigation-system
-      - canary-http-server
-    launch_files:
-      - betaray_navigation_jetson.launch.py
-
-  ai_jetson:
-    hostname: betaray-ai.local
-    systemd_services:
-      - ai-http-server
-    http_only: true  # No ROS2 external communication
-
-  vision_jetson:
-    hostname: vision-jetson.local
-    systemd_services:
-      - betaray-vision-system
-    http_only: true
-
-  thor:
-    hostname: thor.local
-    systemd_services:
-      - thor-deep-reasoning
-      - thor-guardian
-      - thor-memory-api
-    http_only: true
-```
-
-**Expected Behavior**:
-- Only analyze code reachable from specified entry points
-- Mark unreachable code as `deployment_status: not_deployed`
-- Reduce noise by 70%+ on typical codebases
-
-#### 1.2 Launch File Tracing
+### Solution
 
 **Flag**: `--trace-launch <file.launch.py>`
 
-Follow ROS2 launch composition to build actual node graph:
-
 ```bash
-robomind analyze ~/betaray --trace-launch src/betaray_bringup/launch/robot.launch.py
+robomind analyze ~/betaray \
+  --trace-launch src/betaray_core/launch/betaray_navigation_jetson.launch.py
 ```
 
-**Implementation Requirements**:
-1. Parse Python launch files (handle `LaunchDescription`, `Node`, `IncludeLaunchDescription`)
-2. Follow `IncludeLaunchDescription` calls recursively
-3. Extract `Node()` declarations with package/executable
-4. Build dependency graph of what actually launches
-5. Handle conditional launches (`IfCondition`, `UnlessCondition`)
+**Implementation**:
 
-#### 1.3 systemd Service Discovery
+```python
+def trace_launch_file(launch_file: Path) -> Set[str]:
+    """Extract nodes that actually launch from a launch.py file."""
+    deployed_nodes = set()
 
-**Flag**: `--discover-systemd <pattern>`
+    # Parse Node() declarations
+    # Node(package='betaray_motors', executable='motor_controller', name='motor_controller')
 
-Auto-detect deployed services:
+    # Follow IncludeLaunchDescription
+    # Follow TimerAction wrapped nodes
+    # Handle GroupAction
+    # Handle conditional launches (IfCondition)
 
-```bash
-robomind analyze ~/betaray --discover-systemd "/etc/systemd/system/betaray*.service"
+    return deployed_nodes
 ```
 
-**Implementation Requirements**:
-1. Parse systemd service files for `ExecStart`
-2. Map executables back to source files
-3. Mark discovered entry points as `confirmed_deployed`
-4. Handle `ros2 launch` commands in ExecStart
+**Output enhancement**:
+
+```yaml
+nodes:
+  motor_controller:
+    package: betaray_motors
+    deployment_status: DEPLOYED  # Found in launch file
+    launch_delay: 0s
+
+  guardian_bridge:
+    package: betaray_guardian
+    deployment_status: NOT_DEPLOYED  # Not in any launch file
+    confidence: 0.1
+```
+
+**Expected impact**: Filters 54 nodes → 19 deployed nodes
 
 ---
 
-### Feature 2: HTTP/REST Communication Detection
+## Feature 3: HTTP Communication Detection
 
-#### 2.1 HTTP Endpoint Extraction
+### Problem
+NEXUS uses HTTP for cross-Jetson communication. RoboMind only sees ROS2:
 
-Detect Flask/FastAPI/aiohttp routes:
+```
+Thor (HTTP)  ←→  Nav Jetson (ROS2 internal)
+             ←→  Vision Jetson (HTTP :9091)
+             ←→  AI Jetson (HTTP :8080)
+```
+
+RoboMind reported Vision→AI ROS2 topics as "orphaned" - they're dead code because vision uses HTTP.
+
+### Solution
+
+**Detect HTTP servers** (Flask, FastAPI, aiohttp):
 
 ```python
-# Patterns to detect:
-@app.route('/api/detections')
-@app.get('/health')
-@router.post('/api/speak')
-app.add_api_route('/api/tts/speak', ...)
+HTTP_SERVER_PATTERNS = [
+    r'@app\.route\([\'"](.+?)[\'"]\)',           # Flask
+    r'@app\.(get|post|put|delete)\([\'"](.+?)[\'"]\)',  # FastAPI
+    r'app\.add_api_route\([\'"](.+?)[\'"]\)',    # FastAPI alt
+    r'web\.Application\(\).*add_routes',          # aiohttp
+]
 ```
 
-**Expected Output**:
-```yaml
-http_endpoints:
-  - path: /api/detections
-    method: GET
-    file: vision_server.py:45
-    inferred_host: vision-jetson.local:9091
-
-  - path: /api/tts/speak
-    method: POST
-    file: canary_http_server.py:120
-    inferred_host: betaray-nav.local:8081
-```
-
-#### 2.2 HTTP Client Detection
-
-Detect outbound HTTP calls:
+**Detect HTTP clients**:
 
 ```python
-# Patterns to detect:
-requests.get('http://vision-jetson.local:9091/detections')
-requests.post(f'{VISION_URL}/api/capture')
-aiohttp.ClientSession().get(url)
-httpx.AsyncClient().post(...)
-urllib.request.urlopen(...)
+HTTP_CLIENT_PATTERNS = [
+    r'requests\.(get|post|put|delete)\([\'"](.+?)[\'"]\)',
+    r'aiohttp\.ClientSession\(\)\.get\(',
+    r'httpx\.(get|post|AsyncClient)',
+    r'urllib\.request\.urlopen\(',
+]
 ```
 
-**Expected Output**:
-```yaml
-http_clients:
-  - caller: unified_ai_processor.py:89
-    target: http://vision-jetson.local:9091/detections
-    method: GET
-
-  - caller: voice_handler.py:156
-    target_variable: CANARY_URL  # When URL is from env/config
-    method: POST
-```
-
-#### 2.3 Cross-System Communication Map
-
-New output section showing all inter-process communication:
+**New output section**:
 
 ```yaml
-cross_system_communication:
-  nav_jetson <-> thor:
-    - type: http
-      endpoint: POST /api/voice_query
-      direction: nav -> thor
+http_communication:
+  servers:
+    - file: canary_http_server.py
+      port: 8081
+      endpoints:
+        - path: /api/speak
+          method: POST
+        - path: /health
+          method: GET
 
-  vision_jetson <-> thor:
-    - type: http
-      endpoint: GET /detections
-      direction: thor -> vision
+  clients:
+    - file: unified_ai_processor.py:89
+      target: http://vision-jetson.local:9091/detections
 
-  nav_jetson internal:
-    - type: ros2
-      topic: /cmd_vel
-      publishers: [navigation_node]
-      subscribers: [motor_controller]
-
-  # Summary
-  ros2_cross_jetson: false
-  http_cross_jetson: true
+  cross_system_summary:
+    protocol: HTTP
+    ros2_cross_system: false
 ```
 
----
-
-### Feature 3: Confidence Scoring
-
-#### 3.1 Finding Confidence Levels
-
-Add confidence scores to all findings:
+**Impact on findings**:
 
 ```yaml
 findings:
-  - id: TOPIC-001
-    type: topic_mismatch
-    severity: critical
-    confidence: 0.95
-    confidence_factors:
-      - "Subscription found in deployed launch file": +0.4
-      - "Publisher found in same package": +0.3
-      - "Topic name matches exactly": +0.25
-    evidence:
-      - file: motor_controller_node.py:62
-        code: "create_subscription(Bool, 'emergency_stop', ...)"
-
-  - id: TOPIC-002
+  - id: VISION-001
     type: orphaned_subscriber
-    severity: high
-    confidence: 0.25
-    confidence_factors:
-      - "No launch file references this node": -0.4
-      - "File in archive/ directory": -0.3
-      - "Last git commit 6 months ago": -0.05
-    evidence:
-      - file: archive/old_vision_node.py:34
-```
-
-#### 3.2 Confidence Calculation Matrix
-
-| Factor | Confidence Impact |
-|--------|-------------------|
-| Referenced in launch file | +0.4 |
-| Referenced in systemd service | +0.5 |
-| In archive/backup/old directory | -0.4 |
-| No imports from other project files | -0.2 |
-| Last git commit > 6 months | -0.1 |
-| Has matching publisher/subscriber | +0.3 |
-| HTTP endpoint exists for same data | -0.3 (ROS2 finding may be dead) |
-| File has `_old`, `_backup`, `_deprecated` suffix | -0.3 |
-| In `__pycache__` or build directory | -0.5 |
-
-#### 3.3 Confidence Thresholds
-
-```yaml
-output_filtering:
-  default_minimum_confidence: 0.5
-  flags:
-    --min-confidence: <float>  # Show only findings above threshold
-    --show-all: false          # Include low-confidence findings
-    --show-dead-code: false    # Include likely dead code findings
+    topic: /detections
+    severity: high → none
+    reason: "HTTP endpoint detected for same data (vision-jetson:9091/detections)"
+    status: SUPERSEDED_BY_HTTP
 ```
 
 ---
 
-### Feature 4: Runtime Validation Mode
+## Feature 4: Confidence Scoring
 
-#### 4.1 Live System Validation
+### Problem
+All findings reported with equal weight. Dead code findings bury real issues.
+
+### Solution
+
+**Confidence calculation**:
+
+```python
+def calculate_confidence(finding: Finding, context: AnalysisContext) -> float:
+    confidence = 0.5  # Base
+
+    # Positive signals
+    if finding.file in context.launch_deployed_files:
+        confidence += 0.4
+    if finding.file in context.systemd_deployed_files:
+        confidence += 0.5
+    if finding.has_matching_pub_sub:
+        confidence += 0.2
+
+    # Negative signals
+    if "/archive/" in finding.file:
+        confidence -= 0.4
+    if "/build/" in finding.file or "/install/" in finding.file:
+        confidence -= 0.5  # Duplicate
+    if context.http_endpoint_exists_for_topic(finding.topic):
+        confidence -= 0.3  # HTTP supersedes ROS2
+    if finding.file not in context.git_files_modified_last_6_months:
+        confidence -= 0.1
+
+    return max(0.0, min(1.0, confidence))
+```
+
+**Output**:
+
+```yaml
+findings:
+  - id: ESTOP-001
+    topic: emergency_stop
+    severity: critical
+    confidence: 0.95
+    factors:
+      - "File in production launch": +0.4
+      - "Motor controller is critical path": +0.1
+
+  - id: GUARDIAN-001
+    topic: /nexus/guardian/constitutional_status
+    severity: high
+    confidence: 0.15
+    factors:
+      - "Not in any launch file": -0.4
+      - "HTTP Guardian service running on Thor": -0.3
+    status: LIKELY_FALSE_POSITIVE
+```
+
+**Default filter**: `--min-confidence 0.5` (hide low-confidence findings)
+
+---
+
+## Feature 5: Systemd Service Discovery
+
+### Problem
+On Thor, 16 systemd services run the actual system. RoboMind doesn't know about them.
+
+### Solution
+
+**Flag**: `--discover-systemd <host>` or `--systemd-manifest <file>`
+
+```bash
+# Direct discovery (requires SSH)
+robomind analyze ~/betaray --discover-systemd thor@localhost
+
+# Or provide manifest
+robomind analyze ~/betaray --systemd-manifest deployment.yaml
+```
+
+**Manifest format**:
+
+```yaml
+# deployment.yaml
+hosts:
+  thor:
+    services:
+      - name: thor-guardian
+        exec: /home/thor/betaray/nexus_system/guardian_master_node.py
+        protocol: http
+        port: 8095
+
+      - name: thor-voice-server
+        exec: /home/thor/betaray/nexus_system/thor_voice_server.py
+        protocol: http
+
+  nav_jetson:
+    services:
+      - name: betaray-navigation
+        exec: ros2 launch betaray_core betaray_navigation_jetson.launch.py
+        protocol: ros2
+        ros_domain_id: 0
+```
+
+**Impact**: Marks HTTP services as production, ROS2 code connecting to them as potentially dead.
+
+---
+
+## Feature 6: Runtime Validation Mode
+
+### Problem
+Static analysis cannot determine:
+- Which nodes actually run
+- Which topics have active publishers/subscribers
+- Whether HTTP endpoints respond
+
+### Solution
 
 **Command**:
+
 ```bash
 robomind validate ~/betaray_analysis \
   --ssh robot@betaray-nav.local \
-  --ssh robot@betaray-ai.local \
-  --ssh voice_jetson@vision-jetson.local
+  --http thor.local:8087,8095,9091
 ```
 
-**Behavior**:
-1. SSH to each target system
-2. Run `ros2 node list` and `ros2 topic list`
-3. Run `ros2 topic info <topic> -v` for topics in findings
-4. Check HTTP endpoints with `curl -I`
-5. Compare against static analysis findings
-6. Update findings with runtime status
+**Validation steps**:
 
-**Expected Output**:
+```python
+async def validate_runtime(analysis: Analysis, targets: List[Target]):
+    results = ValidationResults()
+
+    # ROS2 validation (via SSH)
+    for ros_target in targets.ros2:
+        nodes = await ssh_exec(ros_target, "ros2 node list")
+        topics = await ssh_exec(ros_target, "ros2 topic list")
+
+        for finding in analysis.findings:
+            if finding.node in nodes:
+                finding.runtime_status = "CONFIRMED"
+            else:
+                finding.runtime_status = "NOT_RUNNING"
+                finding.confidence *= 0.2
+
+    # HTTP validation
+    for http_target in targets.http:
+        health = await http_get(f"{http_target}/health")
+        if health.ok:
+            # Mark ROS2 findings for same service as likely dead
+            ...
+
+    return results
+```
+
+**Output**:
+
 ```yaml
 runtime_validation:
-  timestamp: 2026-01-26T10:30:00Z
+  timestamp: 2026-01-26T20:30:00Z
 
-  nodes:
-    motor_controller_node:
-      static_analysis: found
-      runtime: RUNNING on nav_jetson
-      status: CONFIRMED
-
-    guardian_bridge_node:
-      static_analysis: found
-      runtime: NOT_RUNNING
-      status: DEAD_CODE
-
-  topics:
-    /betaray/motors/emergency_stop:
-      static_analysis: 2 publishers, 1 subscriber
-      runtime: 1 publisher, 1 subscriber
-      status: PARTIAL_MATCH
+  ros2_nodes:
+    confirmed_running:
+      - motor_controller
+      - unified_ai_processor
+      - tts_service
+    not_found:
+      - guardian_bridge      # Finding confidence: 0.95 → 0.19
+      - reasoning_engine     # Finding confidence: 0.80 → 0.16
 
   http_endpoints:
-    http://vision-jetson.local:9091/health:
-      status: 200 OK
-      response_time_ms: 45
+    healthy:
+      - thor:8087 (vLLM)
+      - thor:8095 (Guardian)
+      - vision-jetson:9091
 
-  findings_updated:
-    - id: TOPIC-001
-      original_confidence: 0.95
-      validated_confidence: 0.99
-      runtime_status: CONFIRMED
-
-    - id: TOPIC-002
-      original_confidence: 0.75
-      validated_confidence: 0.05
-      runtime_status: FALSE_POSITIVE
-```
-
-#### 4.2 Continuous Monitoring Integration
-
-**Flag**: `--export-prometheus`
-
-Export metrics for Prometheus/Grafana:
-```
-# HELP robomind_nodes_expected Total nodes expected from static analysis
-robomind_nodes_expected 45
-# HELP robomind_nodes_running Nodes confirmed running at validation time
-robomind_nodes_running 38
-# HELP robomind_topics_connected Topics with matched pub/sub
-robomind_topics_connected 67
-# HELP robomind_topics_orphaned Topics missing publisher or subscriber
-robomind_topics_orphaned 12
-# HELP robomind_findings_confirmed Findings validated as real issues
-robomind_findings_confirmed 5
-# HELP robomind_findings_false_positive Findings determined to be false positives
-robomind_findings_false_positive 23
+  findings_updated: 47
+  false_positives_detected: 43
 ```
 
 ---
 
-### Feature 5: Smart Filtering
+## Feature 7: AI-Optimized Output
 
-#### 5.1 Default Excludes
+### Problem
+Current output requires manual validation. LLMs can help but need structured context.
 
-Apply sensible defaults automatically:
+### Solution
 
-```bash
-# Implicit excludes (unless --no-default-excludes)
---exclude "**/archive/**"
---exclude "**/backup/**"
---exclude "**/old/**"
---exclude "**/deprecated/**"
---exclude "**/*_old.py"
---exclude "**/*_backup.py"
---exclude "**/*_deprecated.py"
---exclude "**/test/**"
---exclude "**/tests/**"
---exclude "**/examples/**"
---exclude "**/__pycache__/**"
---exclude "**/build/**"
---exclude "**/install/**"
---exclude "**/log/**"
-```
-
-#### 5.2 Dead Code Detection Heuristics
-
-Identify likely dead code:
-
-```yaml
-dead_code_indicators:
-  strong:
-    - File in archive/old/backup/deprecated directory
-    - No imports from any other project file
-    - Not in any launch file
-    - Not in any systemd service
-
-  moderate:
-    - Last git commit > 6 months with no references
-    - Contains TODO/FIXME mentioning "remove" or "deprecated"
-    - Has HTTP endpoint for same data (ROS2 likely unused)
-
-  weak:
-    - No matching publisher/subscriber in project
-    - Uses deprecated ROS2 APIs
-```
-
-**Output flag**: `--show-dead-code-candidates`
-
----
-
-### Feature 6: Enhanced Output Formats
-
-#### 6.1 AI-Optimized Context
-
-New `--format ai-context` output designed for LLM consumption:
+**Flag**: `--format ai-context`
 
 ```yaml
 # Optimized for LLM consumption
-system_summary:
-  architecture: "4-Jetson HTTP-based with internal ROS2"
-  cross_jetson_protocol: http
-  primary_ros2_domain: nav_jetson (DOMAIN_ID=0)
+system_architecture:
+  type: "distributed multi-jetson"
+  cross_system_protocol: http
+  internal_protocol: ros2
 
-deployment_status:
-  confirmed_running:
-    - motor_controller_node
-    - canary_http_server
-    - betaray_navigation_node
-  likely_dead:
-    - guardian_bridge
-    - unified_ai_node_v1
-    - old_voice_handler
+  hosts:
+    thor:
+      role: "main brain"
+      services: [guardian, vllm, voice, memory, vision-router]
+      protocol: http
+
+    nav_jetson:
+      role: "navigation"
+      ros2_domain: 0
+      deployed_nodes: 19
+
+    vision_jetson:
+      role: "vision"
+      protocol: http_only
+      port: 9091
 
 actionable_findings:
   - id: ESTOP-001
-    summary: "Emergency stop subscription uses relative topic name"
-    file: motor_controller_node.py:62
-    current_code: "create_subscription(Bool, 'emergency_stop', ...)"
-    suggested_fix: "create_subscription(Bool, '/betaray/motors/emergency_stop', ...)"
+    priority: 1
+    summary: "Emergency stop uses inconsistent topic naming"
+    file: motor_controller_node.py:63
+    current: "create_subscription(Bool, 'emergency_stop', ...)"
+    fix: "create_subscription(Bool, '/emergency_stop', ...)"
+    risk: "E-stop may fail if node runs in namespace"
     confidence: 0.95
     runtime_confirmed: true
-    risk_level: HIGH
-    effort_level: LOW
 
-non_actionable_findings:
-  - id: VISION-001
-    summary: "Vision pipeline ROS2 topics orphaned"
-    reason_non_actionable: "Code is dead - vision uses HTTP :9091"
-    confidence: 0.15
+ignored_findings:
+  count: 55
+  reason: "Low confidence (<0.5) - likely dead code or duplicates"
+
+dead_code_detected:
+  - path: betaray-nexus-integration/
+    reason: "ROS2↔NEXUS bridge - NEXUS uses HTTP directly"
+  - path: betaray_ai/reasoning_engine_node.py
+    reason: "Replaced by unified_ai_processor"
 ```
-
-#### 6.2 Diff-Friendly Output
-
-**Flag**: `--format diff`
-
-For tracking changes between analyses:
-
-```diff
-# robomind diff old_analysis/ new_analysis/
-+ topic: /nexus/emergency_stop (NEW)
-- topic: /betaray/emergency_stop (REMOVED)
-~ node: motor_controller (MODIFIED: +1 subscription)
-= finding: ESTOP-001 (UNCHANGED)
-! finding: VISION-001 (confidence 0.75 -> 0.15, now non-actionable)
-```
-
-#### 6.3 Sarif Output
-
-**Flag**: `--format sarif`
-
-For IDE/CI integration with standard Static Analysis Results Interchange Format.
 
 ---
 
 ## Implementation Priority
 
-| Phase | Features | Effort | Impact |
-|-------|----------|--------|--------|
-| 1 | Default excludes, confidence scores | Low | High |
-| 2 | Launch file tracing, deployment manifest | Medium | High |
-| 3 | HTTP endpoint detection | Medium | High |
-| 4 | Runtime validation mode | High | Very High |
-| 5 | AI-optimized output, Prometheus export | Medium | Medium |
+| Phase | Feature | Effort | Impact |
+|-------|---------|--------|--------|
+| 1 | Build artifact exclusion | Low | High (58% noise reduction) |
+| 2 | Confidence scoring | Low | High (surfaces real issues) |
+| 3 | Launch file tracing | Medium | High (identifies deployed code) |
+| 4 | HTTP detection | Medium | High (catches modern architectures) |
+| 5 | Systemd discovery | Medium | Medium |
+| 6 | Runtime validation | High | Very High (ground truth) |
+| 7 | AI-optimized output | Low | Medium |
 
-**Recommendation**: Phases 1-3 would have prevented 80% of false positives in the BetaRay analysis.
+**Phase 1+2 alone would have reduced false positives from 96% to ~40%.**
 
 ---
 
 ## Verification Criteria
 
-After implementing features, re-run on BetaRay/NEXUS codebase:
+Re-run on BetaRay/NEXUS after implementing:
 
 ```bash
 robomind analyze ~/betaray \
-  --deployment-manifest ~/betaray/deployment.yaml \
-  --trace-launch ~/betaray/Betaray_Dual_v1/jetson_navigation/betaray_nav_ws/src/betaray_bringup/launch/robot.launch.py \
+  --trace-launch src/betaray_core/launch/betaray_navigation_jetson.launch.py \
+  --systemd-manifest ~/deployment.yaml \
+  --min-confidence 0.5 \
   --format ai-context \
   -o ~/betaray_analysis_v2
 
-# Validate against live system
 robomind validate ~/betaray_analysis_v2 \
-  --ssh robot@betaray-nav.local
+  --ssh robot@betaray-nav.local \
+  --http localhost:8087,localhost:8095
 ```
 
-**Success Criteria**:
+**Success metrics**:
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| False positive rate | ~80% | <20% |
-| HTTP endpoints detected | 0% | 100% |
-| Confidence correlation with runtime | N/A | >0.8 |
-| AI context actionability | Low | High (no additional exploration needed) |
+| Metric | Before | Target |
+|--------|--------|--------|
+| Nodes reported | 130 | ~19 (deployed only) |
+| False positive rate | 96% | <20% |
+| Actionable findings | 2 buried in 57 | 2 at top |
+| HTTP endpoints detected | 0 | 10+ |
+| Runtime validation | None | Integrated |
 
 ---
 
-## The Real Issue That RoboMind Found
+## Appendix: BetaRay/NEXUS Ground Truth
 
-For reference, the one legitimate finding:
-
-**Location**: `motor_controller_node.py:62-66`
-
-```python
-self.stop_sub = self.create_subscription(
-    Bool, 'emergency_stop', self.emergency_stop_callback, 10)  # NO SLASH
-self.voice_emergency_sub = self.create_subscription(
-    Bool, '/betaray/motors/emergency_stop', self.voice_emergency_callback, 1)  # WITH SLASH
+### Actually Running (Thor - 16 HTTP services)
+```
+thor-guardian.service          → guardian_master_node.py
+thor-deep-reasoning.service    → vLLM :8087
+thor-memory-api.service        → memory API
+thor-voice-server.service      → thor_voice_server.py
+thor-vision-router.service     → vision routing
+thor-thought-loop-v2.service   → perception
+thor-face-recognition.service  → face recognition
++ 9 more watchdogs/utilities
 ```
 
-**Risk**: Bare `emergency_stop` is namespace-relative. If the node launches in a namespace, the subscription becomes `/<namespace>/emergency_stop`, potentially causing emergency stop failures.
-
-**Mitigation Already Present**: The dual-subscription means voice e-stop works via the second subscription. The risk is if something publishes to bare `emergency_stop` expecting it to work universally.
-
-**Recommended Fix**: Add leading slash for consistency:
-```python
-self.stop_sub = self.create_subscription(
-    Bool, '/emergency_stop', self.emergency_stop_callback, 10)
+### Actually Running (Nav Jetson - 19 ROS2 nodes)
+```
+motor_controller, odometry_publisher, betaray_navigation_sensors,
+memory_manager, rplidar_node, slam_toolbox, Nav2 stack,
+tts_router, tts_service, unified_ai_processor, query_classifier,
+ai_tools_service, voice_control, voice_coordinator, exploration_behavior,
+system_coordinator, memory_system, robust_camera_launcher
 ```
 
----
-
-## Appendix: NEXUS Architecture Reference
-
+### Dead Code (analyzed but not deployed)
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         THOR (Main Brain)                           │
-│  HTTP APIs: 8087-8096 | vLLM: 30000 | Guardian: Observatory HTTP    │
-└──────────────────┬─────────────────┬─────────────────┬──────────────┘
-                   │ HTTP            │ HTTP            │ HTTP
-                   ▼                 ▼                 ▼
-┌─────────────────────┐ ┌─────────────────┐ ┌─────────────────────────┐
-│    Nav Jetson       │ │  Vision Jetson  │ │      AI Jetson          │
-│ ROS2 DOMAIN_ID=0    │ │  HTTP :9091     │ │   HTTP :8080            │
-│ Canary HTTP :8081   │ │  (no ROS2 ext)  │ │   (no ROS2 ext)         │
-│                     │ │                 │ │                         │
-│ ┌─────────────────┐ │ │ ┌─────────────┐ │ │ ┌─────────────────────┐ │
-│ │ motor_controller│ │ │ │ YOLO server │ │ │ │  LLM query server   │ │
-│ │ navigation_node │ │ │ │ camera_node │ │ │ │  embedding_server   │ │
-│ │ canary_http     │ │ │ └─────────────┘ │ │ └─────────────────────┘ │
-│ └─────────────────┘ │ │                 │ │                         │
-└─────────────────────┘ └─────────────────┘ └─────────────────────────┘
-
-Key: Cross-Jetson = HTTP only. ROS2 is internal to Nav Jetson.
+betaray-nexus-integration/     → ROS2↔NEXUS bridge (unused)
+reasoning_engine_node.py       → Replaced by unified_ai_processor
+guardian_bridge_node.py        → Guardian is HTTP on Thor
+constitutional_*.py            → Never deployed
+vision_obstacle_detector.py    → Vision uses HTTP
+76 duplicate nodes             → build/install artifacts
 ```
 
 ---
 
-*Document generated: 2026-01-26*
-*Based on: RoboMind v1.0 analysis of NEXUS/BetaRay codebase*
-*Validated against: Live 4-Jetson robot system*
+*Feedback based on live validation: 2026-01-26*
+*System: NEXUS/BetaRay 4-Jetson distributed robot*
+*Validation method: systemd service check, process list, HTTP health endpoints*
