@@ -424,22 +424,33 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
         if traced_nodes:
             console.print("[bold]Phase 3.6: Filtering to deployed nodes...[/bold]")
 
-            # Match nodes by name, class_name, or executable name
+            def normalize(name: str) -> str:
+                """Normalize name for matching: lowercase, remove underscores/hyphens."""
+                return name.lower().replace("_", "").replace("-", "")
+
+            # Match nodes by name, class_name, executable, or file name
             def is_deployed(node):
-                # Check various name forms
-                node_name_lower = node.name.lower()
-                class_name_lower = node.class_name.lower() if node.class_name else ""
+                # Get all name forms for this node
+                node_names = [
+                    node.name,
+                    node.class_name or "",
+                    # Extract filename without extension
+                    Path(node.file_path).stem if node.file_path else "",
+                ]
+                node_names_normalized = [normalize(n) for n in node_names if n]
 
                 for traced in traced_nodes:
-                    traced_lower = traced.lower()
-                    # Direct match
-                    if traced_lower == node_name_lower or traced_lower == class_name_lower:
-                        return True
-                    # Partial match (e.g., "motor_controller" matches "betaray_motor_controller")
-                    if traced_lower in node_name_lower or node_name_lower in traced_lower:
-                        return True
-                    if class_name_lower and (traced_lower in class_name_lower or class_name_lower in traced_lower):
-                        return True
+                    traced_norm = normalize(traced)
+
+                    # Check all node name forms
+                    for node_norm in node_names_normalized:
+                        # Direct match
+                        if traced_norm == node_norm:
+                            return True
+                        # Partial match (e.g., "motor_controller" matches "betaray_motor_controller")
+                        if traced_norm in node_norm or node_norm in traced_norm:
+                            return True
+
                 return False
 
             deployed_nodes = [n for n in all_nodes if is_deployed(n)]
