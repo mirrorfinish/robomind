@@ -1,14 +1,19 @@
 """
 RoboMind Analyzers - System analysis modules
 
-Day 4 implementation:
+Includes:
 - coupling.py - Calculate coupling strength between components
-
-Day 9 implementation:
 - flow_tracer.py - Trace data flow paths through the system
-
-Day 10 implementation:
 - confidence.py - Calculate confidence scores for findings
+- recommendations.py - Generate actionable recommendations
+- qos_analyzer.py - QoS compatibility checking
+- timing_analyzer.py - Timing chain analysis
+- security_analyzer.py - Security vulnerability scanning
+- architecture_analyzer.py - Architecture pattern detection
+- complexity_analyzer.py - Callback complexity metrics
+- message_analyzer.py - Message type checking
+- parameter_analyzer.py - Parameter validation
+- deep_analyzer.py - Unified deep analysis
 """
 
 from robomind.analyzers.coupling import (
@@ -31,20 +36,116 @@ from robomind.analyzers.confidence import (
     NodeConfidenceContext,
     get_confidence_summary,
 )
+from robomind.analyzers.recommendations import (
+    RecommendationEngine,
+    Recommendation,
+    RecommendationReport,
+    generate_recommendations,
+)
+from robomind.analyzers.qos_analyzer import (
+    QoSAnalyzer,
+    QoSProfile,
+    QoSFinding,
+    analyze_qos,
+)
+from robomind.analyzers.timing_analyzer import (
+    TimingAnalyzer,
+    TimingAnalysisResult,
+    TimingIssue,
+    CallbackChain,
+    analyze_timing,
+)
+from robomind.analyzers.security_analyzer import (
+    SecurityAnalyzer,
+    SecurityFinding,
+    analyze_security,
+)
+from robomind.analyzers.architecture_analyzer import (
+    ArchitectureAnalyzer,
+    ArchitectureFinding,
+    analyze_architecture,
+)
+from robomind.analyzers.complexity_analyzer import (
+    ComplexityAnalyzer,
+    ComplexityFinding,
+    ComplexityMetrics,
+    analyze_complexity,
+)
+from robomind.analyzers.message_analyzer import (
+    MessageTypeAnalyzer,
+    MessageTypeFinding,
+    analyze_message_types,
+)
+from robomind.analyzers.parameter_analyzer import (
+    ParameterAnalyzer,
+    ParameterFinding,
+    analyze_parameters,
+)
+from robomind.analyzers.deep_analyzer import (
+    DeepAnalyzer,
+    DeepAnalysisReport,
+    UnifiedFinding,
+    deep_analyze,
+)
 
 __all__ = [
+    # Coupling
     "CouplingAnalyzer",
     "CouplingMatrix",
     "CouplingScore",
     "analyze_coupling",
+    # Flow
     "FlowTracer",
     "FlowPath",
     "FlowTraceResult",
     "trace_flow",
+    # Confidence
     "ConfidenceCalculator",
     "ConfidenceScore",
     "ConfidenceLevel",
     "ConfidenceFactor",
     "NodeConfidenceContext",
     "get_confidence_summary",
+    # Recommendations
+    "RecommendationEngine",
+    "Recommendation",
+    "RecommendationReport",
+    "generate_recommendations",
+    # QoS
+    "QoSAnalyzer",
+    "QoSProfile",
+    "QoSFinding",
+    "analyze_qos",
+    # Timing
+    "TimingAnalyzer",
+    "TimingAnalysisResult",
+    "TimingIssue",
+    "CallbackChain",
+    "analyze_timing",
+    # Security
+    "SecurityAnalyzer",
+    "SecurityFinding",
+    "analyze_security",
+    # Architecture
+    "ArchitectureAnalyzer",
+    "ArchitectureFinding",
+    "analyze_architecture",
+    # Complexity
+    "ComplexityAnalyzer",
+    "ComplexityFinding",
+    "ComplexityMetrics",
+    "analyze_complexity",
+    # Message Types
+    "MessageTypeAnalyzer",
+    "MessageTypeFinding",
+    "analyze_message_types",
+    # Parameters
+    "ParameterAnalyzer",
+    "ParameterFinding",
+    "analyze_parameters",
+    # Deep Analysis
+    "DeepAnalyzer",
+    "DeepAnalysisReport",
+    "UnifiedFinding",
+    "deep_analyze",
 ]

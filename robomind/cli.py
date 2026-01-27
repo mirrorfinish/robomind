@@ -1979,6 +1979,226 @@ def recommend(project_path: str, output: str, trace_launch: str, min_severity: s
         sys.exit(1)
 
 
+@main.command(name='deep-analyze')
+@click.argument("project_path", type=click.Path(exists=True))
+@click.option("-o", "--output", type=click.Path(), help="Output file for report (JSON)")
+@click.option("--trace-launch", type=click.Path(exists=True), help="Filter to deployed nodes")
+@click.option("--min-severity", type=click.Choice(["critical", "high", "medium", "low"]),
+              default="low", help="Minimum severity to report")
+@click.option("--enable", multiple=True,
+              type=click.Choice(["qos", "timing", "security", "architecture", "complexity", "message", "parameter"]),
+              help="Enable specific analyzers (default: all)")
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
+def deep_analyze_cmd(project_path: str, output: str, trace_launch: str, min_severity: str,
+                     enable: tuple, verbose: bool):
+    """
+    Run comprehensive deep analysis on ROS2 codebase.
+
+    Combines multiple analyzers for thorough code review:
+
+    \b
+    - QoS: Quality of Service compatibility between pub/sub
+    - Timing: Callback chains, blocking operations, timer frequencies
+    - Security: Hardcoded secrets, injection vulnerabilities
+    - Architecture: Circular dependencies, dead code, anti-patterns
+    - Complexity: Cyclomatic complexity, nesting depth
+    - Message: Type mismatches, deprecated types
+    - Parameter: Missing validation, naming conventions
+
+    Examples:
+
+    \b
+      robomind deep-analyze ~/my_robot
+      robomind deep-analyze ~/project --min-severity high
+      robomind deep-analyze ~/project --enable security --enable timing
+      robomind deep-analyze ~/project --trace-launch launch/robot.launch.py
+    """
+    import json
+    from pathlib import Path
+    from robomind.core.scanner import ProjectScanner
+    from robomind.ros2.node_extractor import ROS2NodeExtractor
+    from robomind.ros2.topic_extractor import TopicExtractor
+    from robomind.analyzers.deep_analyzer import DeepAnalyzer
+
+    project_path = Path(project_path).resolve()
+
+    console.print(f"\n[bold blue]RoboMind Deep Analysis[/bold blue]")
+    console.print(f"Project: {project_path}")
+    if trace_launch:
+        console.print(f"Launch filter: {trace_launch}")
+    console.print()
+
+    try:
+        # Determine which analyzers to enable
+        all_analyzers = {"qos", "timing", "security", "architecture", "complexity", "message", "parameter"}
+        enabled = set(enable) if enable else all_analyzers
+
+        console.print(f"[dim]Enabled analyzers: {', '.join(sorted(enabled))}[/dim]\n")
+
+        # Phase 1: Scan
+        console.print("[bold]Phase 1: Scanning project...[/bold]")
+        scanner = ProjectScanner(project_path)
+        scan = scanner.scan()
+
+        # Find ROS2 files
+        ros2_files = []
+        for pf in scan.python_files:
+            try:
+                with open(pf.path, 'r') as f:
+                    content = f.read()
+                if 'rclpy' in content or 'from rclpy' in content:
+                    ros2_files.append(pf.path)
+            except Exception:
+                pass
+        console.print(f"  Found {len(ros2_files)} ROS2 files")
+
+        # Phase 2: Extract nodes
+        console.print("[bold]Phase 2: Extracting ROS2 nodes...[/bold]")
+        extractor = ROS2NodeExtractor()
+        nodes = []
+        for f in ros2_files:
+            nodes.extend(extractor.extract_from_file(f))
+        console.print(f"  Found {len(nodes)} ROS2 nodes")
+
+        # Optional: Filter by launch file
+        launched_nodes = set()
+        if trace_launch:
+            from robomind.deployment import trace_launch_file
+
+            console.print("[bold]Phase 2.5: Filtering to deployed nodes...[/bold]")
+            trace = trace_launch_file(Path(trace_launch), project_root=project_path)
+
+            for node in trace.nodes:
+                launched_nodes.add(node.name.lower().replace("_", "").replace("-", ""))
+                launched_nodes.add(node.executable.lower().replace("_", "").replace("-", ""))
+
+            def is_deployed(node):
+                node_names = [
+                    node.name.lower().replace("_", "").replace("-", ""),
+                    (node.class_name or "").lower().replace("_", "").replace("-", ""),
+                    Path(node.file_path).stem.lower().replace("_", "").replace("-", "") if node.file_path else "",
+                ]
+                for traced in launched_nodes:
+                    for node_name in node_names:
+                        if node_name and (traced in node_name or node_name in traced):
+                            return True
+                return False
+
+            original_count = len(nodes)
+            nodes = [n for n in nodes if is_deployed(n)]
+            console.print(f"  Filtered to {len(nodes)} deployed nodes (from {original_count})")
+
+        # Phase 3: Build topic graph
+        console.print("[bold]Phase 3: Building topic graph...[/bold]")
+        topic_ext = TopicExtractor()
+        topic_ext.add_nodes(nodes)
+        topic_graph = topic_ext.build()
+        console.print(f"  Found {len(topic_graph.topics)} topics")
+
+        # Phase 4: Deep Analysis
+        console.print("[bold]Phase 4: Running deep analysis...[/bold]")
+        analyzer = DeepAnalyzer()
+        analyzer.add_nodes(nodes)
+        analyzer.add_topic_graph(topic_graph)
+        if launched_nodes:
+            analyzer.set_launched_nodes(launched_nodes)
+
+        report = analyzer.analyze(
+            enable_qos="qos" in enabled,
+            enable_timing="timing" in enabled,
+            enable_security="security" in enabled,
+            enable_architecture="architecture" in enabled,
+            enable_complexity="complexity" in enabled,
+            enable_message="message" in enabled,
+            enable_parameter="parameter" in enabled,
+        )
+
+        # Filter by severity
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        min_level = severity_order[min_severity]
+        filtered = [f for f in report.all_findings if severity_order.get(f.severity, 4) <= min_level]
+
+        console.print(f"  Found {len(filtered)} issues (severity >= {min_severity})")
+        console.print()
+
+        # Display findings by category
+        console.print("[bold]=== DEEP ANALYSIS RESULTS ===[/bold]\n")
+
+        severity_colors = {
+            "critical": "red bold",
+            "high": "yellow",
+            "medium": "cyan",
+            "low": "dim",
+        }
+
+        # Group by category
+        categories = {
+            "security": ("Security Vulnerabilities", []),
+            "architecture": ("Architecture Issues", []),
+            "timing": ("Timing Issues", []),
+            "qos": ("QoS Compatibility", []),
+            "complexity": ("Complexity Issues", []),
+            "message": ("Message Type Issues", []),
+            "parameter": ("Parameter Issues", []),
+        }
+
+        for finding in filtered:
+            if finding.category in categories:
+                categories[finding.category][1].append(finding)
+
+        for cat_key, (cat_name, cat_findings) in categories.items():
+            if not cat_findings:
+                continue
+
+            console.print(f"[bold]{cat_name}[/bold] ({len(cat_findings)})")
+            for i, f in enumerate(cat_findings[:10], 1):
+                color = severity_colors.get(f.severity, "white")
+                console.print(f"  [{color}]{i}. [{f.severity.upper()}] {f.title}[/{color}]")
+                if verbose:
+                    console.print(f"     {f.description[:80]}...")
+                    if f.file_path:
+                        console.print(f"     [dim]{Path(f.file_path).name}:{f.line_number or '?'}[/dim]")
+                    if f.recommendation:
+                        console.print(f"     [green]Fix:[/green] {f.recommendation[:60]}...")
+            if len(cat_findings) > 10:
+                console.print(f"  [dim]... and {len(cat_findings) - 10} more[/dim]")
+            console.print()
+
+        # Timing chains
+        if report.callback_chains and "timing" in enabled:
+            console.print("[bold]Callback Chains Detected[/bold]")
+            console.print(f"  Total chains: {len(report.callback_chains)}")
+            if report.critical_path:
+                console.print(f"  Critical path: {' → '.join(report.critical_path.nodes[:5])}")
+                console.print(f"  Hops: {report.critical_path.total_hops}")
+            console.print()
+
+        # Summary
+        console.print("[bold]=== SUMMARY ===[/bold]")
+        console.print(f"Total findings: {len(filtered)}")
+        console.print(f"  [red]CRITICAL: {report.critical_count}[/red]")
+        console.print(f"  [yellow]HIGH: {report.high_count}[/yellow]")
+        console.print(f"  [cyan]MEDIUM: {report.medium_count}[/cyan]")
+        console.print(f"  [dim]LOW: {report.low_count}[/dim]")
+
+        # Save to file
+        if output:
+            output_path = Path(output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'w') as f:
+                json.dump(report.to_dict(), f, indent=2)
+            console.print(f"\n[green]Report saved to: {output_path}[/green]")
+
+        console.print("\n[bold green]Deep analysis complete![/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
 @main.command()
 def info():
     """Show information about RoboMind."""
