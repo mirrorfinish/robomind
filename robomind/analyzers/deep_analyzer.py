@@ -237,20 +237,49 @@ class DeepAnalyzer:
                 enable_architecture: bool = True,
                 enable_complexity: bool = True,
                 enable_message: bool = True,
-                enable_parameter: bool = True) -> DeepAnalysisReport:
-        """Run all enabled analyses and generate unified report."""
+                enable_parameter: bool = True,
+                progress_callback=None) -> DeepAnalysisReport:
+        """Run all enabled analyses and generate unified report.
+
+        Args:
+            progress_callback: Optional callable(analyzer_name, step, total, findings_so_far)
+                Called before each analyzer runs and after the last one completes.
+        """
 
         report = DeepAnalysisReport()
 
+        # Build list of enabled analyzers for progress tracking
+        enabled = []
+        if enable_qos: enabled.append("qos")
+        if enable_timing: enabled.append("timing")
+        if enable_security: enabled.append("security")
+        if enable_architecture: enabled.append("architecture")
+        if enable_complexity: enabled.append("complexity")
+        if enable_message: enabled.append("message")
+        if enable_parameter: enabled.append("parameter")
+        total_steps = len(enabled)
+        step = 0
+
+        def _progress(name, findings_count=0):
+            nonlocal step
+            step += 1
+            if progress_callback:
+                progress_callback(name, step, total_steps, findings_count)
+
         # QoS Analysis
         if enable_qos:
+            if progress_callback:
+                progress_callback("qos", step + 1, total_steps, 0)
             qos_analyzer = QoSAnalyzer()
             qos_analyzer.add_nodes(self.nodes)
             qos_findings = qos_analyzer.analyze()
             report.qos_findings = [self._convert_qos_finding(f) for f in qos_findings]
+            _progress("qos", len(report.qos_findings))
 
         # Timing Analysis
         if enable_timing:
+            if progress_callback:
+                progress_callback("timing", step + 1, total_steps, len(report.all_findings))
             timing_analyzer = TimingAnalyzer()
             timing_analyzer.add_nodes(self.nodes)
             if self.topic_graph:
@@ -259,16 +288,22 @@ class DeepAnalyzer:
             report.timing_findings = [self._convert_timing_issue(f) for f in timing_result.issues]
             report.callback_chains = timing_result.chains
             report.critical_path = timing_result.critical_path
+            _progress("timing", len(report.timing_findings))
 
         # Security Analysis
         if enable_security:
+            if progress_callback:
+                progress_callback("security", step + 1, total_steps, len(report.all_findings))
             security_analyzer = SecurityAnalyzer()
             security_analyzer.add_nodes(self.nodes)
             security_findings = security_analyzer.analyze()
             report.security_findings = [self._convert_security_finding(f) for f in security_findings]
+            _progress("security", len(report.security_findings))
 
         # Architecture Analysis
         if enable_architecture:
+            if progress_callback:
+                progress_callback("architecture", step + 1, total_steps, len(report.all_findings))
             arch_analyzer = ArchitectureAnalyzer()
             arch_analyzer.add_nodes(self.nodes)
             if self.topic_graph:
@@ -277,29 +312,39 @@ class DeepAnalyzer:
                 arch_analyzer.launched_nodes = self.launched_nodes
             arch_findings = arch_analyzer.analyze()
             report.architecture_findings = [self._convert_architecture_finding(f) for f in arch_findings]
+            _progress("architecture", len(report.architecture_findings))
 
         # Complexity Analysis
         if enable_complexity:
+            if progress_callback:
+                progress_callback("complexity", step + 1, total_steps, len(report.all_findings))
             complexity_analyzer = ComplexityAnalyzer()
             complexity_analyzer.add_nodes(self.nodes)
             complexity_findings = complexity_analyzer.analyze()
             report.complexity_findings = [self._convert_complexity_finding(f) for f in complexity_findings]
+            _progress("complexity", len(report.complexity_findings))
 
         # Message Type Analysis
         if enable_message:
+            if progress_callback:
+                progress_callback("message", step + 1, total_steps, len(report.all_findings))
             message_analyzer = MessageTypeAnalyzer()
             message_analyzer.add_nodes(self.nodes)
             if self.topic_graph:
                 message_analyzer.add_topic_graph(self.topic_graph)
             message_findings = message_analyzer.analyze()
             report.message_findings = [self._convert_message_finding(f) for f in message_findings]
+            _progress("message", len(report.message_findings))
 
         # Parameter Analysis
         if enable_parameter:
+            if progress_callback:
+                progress_callback("parameter", step + 1, total_steps, len(report.all_findings))
             param_analyzer = ParameterAnalyzer()
             param_analyzer.add_nodes(self.nodes)
             param_findings = param_analyzer.analyze()
             report.parameter_findings = [self._convert_parameter_finding(f) for f in param_findings]
+            _progress("parameter", len(report.parameter_findings))
 
         # Combine all findings
         all_findings = (

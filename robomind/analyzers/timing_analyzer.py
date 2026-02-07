@@ -10,6 +10,7 @@ Analyzes timing characteristics of ROS2 callback chains to identify:
 
 import ast
 import re
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -208,67 +209,100 @@ class TimingAnalyzer:
         return frequencies, issues
 
     def _trace_callback_chains(self) -> List[CallbackChain]:
-        """Trace callback chains through the topic graph."""
-        chains = []
+        """Trace sensor-to-actuator callback chains using iterative BFS.
+
+        Uses node-level adjacency (like FlowTracer) instead of topic-level
+        recursion to avoid exponential blowup on dense graphs.
+        O(V+E) per search instead of O(branching_factor^depth).
+        """
+        chains: List[CallbackChain] = []
 
         if not self.topic_graph:
             return chains
 
-        # Build node -> subscribed topics and node -> published topics maps
-        node_subs: Dict[str, Set[str]] = {}
+        MAX_CHAINS = 200
+        MAX_DEPTH = 8
+
+        SENSOR_KEYWORDS = ('scan', 'camera', 'image', 'imu', 'odom', 'lidar', 'sensor')
+        ACTUATOR_KEYWORDS = ('cmd_vel', 'motor', 'actuator', 'joint', 'servo')
+
+        # Build node-level forward adjacency: node -> {neighbor_node: connecting_topic}
+        # This is the key insight from FlowTracer — operate on nodes, not topics
+        forward_adj: Dict[str, Dict[str, str]] = {}
         node_pubs: Dict[str, Set[str]] = {}
 
         for node in self.nodes:
-            node_subs[node.name] = {s.topic for s in node.subscribers if s.topic}
             node_pubs[node.name] = {p.topic for p in node.publishers if p.topic}
 
-        # Find sensor-to-actuator chains using BFS
-        def find_chain(start_topic: str, visited: Set[str], path: List[str], topics: List[str]) -> List[CallbackChain]:
-            found_chains = []
+        # Build adjacency from topic graph (publisher -> subscriber via topic)
+        for topic_name, topic in self.topic_graph.topics.items():
+            for pub_node in topic.publishers:
+                if pub_node not in forward_adj:
+                    forward_adj[pub_node] = {}
+                for sub_node in topic.subscribers:
+                    if pub_node != sub_node:
+                        forward_adj[pub_node][sub_node] = topic_name
 
-            # Find nodes that subscribe to this topic
-            for node in self.nodes:
-                if start_topic not in node_subs.get(node.name, set()):
+        # Identify sensor entry nodes (subscribe to sensor topics)
+        # and actuator exit nodes (publish to actuator topics)
+        sensor_nodes: Set[str] = set()
+        actuator_nodes: Set[str] = set()
+
+        for node in self.nodes:
+            for sub in node.subscribers:
+                if sub.topic and any(k in sub.topic.lower() for k in SENSOR_KEYWORDS):
+                    sensor_nodes.add(node.name)
+            for pub in node.publishers:
+                if pub.topic and any(k in pub.topic.lower() for k in ACTUATOR_KEYWORDS):
+                    actuator_nodes.add(node.name)
+
+        # BFS from each sensor node to find paths to actuator nodes
+        seen_paths: Set[tuple] = set()
+
+        for sensor_node in sensor_nodes:
+            if len(chains) >= MAX_CHAINS:
+                break
+
+            # BFS queue: (current_node, path_nodes, path_topics)
+            queue: deque = deque([(sensor_node, [sensor_node], [])])
+
+            while queue and len(chains) < MAX_CHAINS:
+                current, path, topics = queue.popleft()
+
+                if len(path) > MAX_DEPTH:
                     continue
-                if node.name in visited:
-                    continue
 
-                new_visited = visited | {node.name}
-                new_path = path + [node.name]
-                new_topics = topics + [start_topic]
-
-                # Check if this node publishes to actuator topics
-                for pub_topic in node_pubs.get(node.name, set()):
-                    if any(act in pub_topic.lower() for act in ['cmd_vel', 'motor', 'actuator', 'joint', 'servo']):
-                        # Found complete chain!
-                        found_chains.append(CallbackChain(
-                            name=f"{path[0] if path else 'sensor'}→{node.name}",
-                            nodes=new_path,
-                            topics=new_topics + [pub_topic],
-                            total_hops=len(new_path),
+                # Check if current node is an actuator node (and not the start)
+                if current in actuator_nodes and len(path) > 1:
+                    path_key = tuple(path)
+                    if path_key not in seen_paths:
+                        seen_paths.add(path_key)
+                        # Find which actuator topic this node publishes
+                        actuator_topic = ""
+                        for pub_topic in node_pubs.get(current, set()):
+                            if any(k in pub_topic.lower() for k in ACTUATOR_KEYWORDS):
+                                actuator_topic = pub_topic
+                                break
+                        chains.append(CallbackChain(
+                            name=f"{sensor_node}→{current}",
+                            nodes=list(path),
+                            topics=topics + [actuator_topic] if actuator_topic else topics,
+                            total_hops=len(path),
                             chain_type='sensor_to_actuator',
                         ))
-                    else:
-                        # Continue searching
-                        found_chains.extend(find_chain(pub_topic, new_visited, new_path, new_topics))
+                    # Don't stop — actuator nodes might also relay to other actuators
+                    continue
 
-            return found_chains
+                # Explore neighbors
+                for neighbor, topic in forward_adj.get(current, {}).items():
+                    if neighbor not in path:  # Cycle avoidance
+                        queue.append((
+                            neighbor,
+                            path + [neighbor],
+                            topics + [topic],
+                        ))
 
-        # Start from sensor topics
-        for topic in self.topic_graph.topics:
-            if any(sens in topic.lower() for sens in ['scan', 'camera', 'image', 'imu', 'odom', 'lidar', 'sensor']):
-                chains.extend(find_chain(topic, set(), [], []))
-
-        # Deduplicate and find longest/critical chains
-        unique_chains = []
-        seen = set()
-        for chain in chains:
-            key = tuple(chain.nodes)
-            if key not in seen:
-                seen.add(key)
-                unique_chains.append(chain)
-
-        return unique_chains
+        return chains
 
     def analyze(self) -> TimingAnalysisResult:
         """Run full timing analysis."""

@@ -2280,6 +2280,22 @@ def deep_analyze_cmd(project_path: str, output: str, trace_launch: str, min_seve
         if launched_nodes:
             analyzer.set_launched_nodes(launched_nodes)
 
+        # Progress callback for per-analyzer reporting
+        analyzer_labels = {
+            "qos": "QoS Compatibility",
+            "timing": "Timing Chains",
+            "security": "Security Vulnerabilities",
+            "architecture": "Architecture Issues",
+            "complexity": "Complexity Metrics",
+            "message": "Message Types",
+            "parameter": "Parameter Validation",
+        }
+
+        def on_progress(name, step, total, findings_so_far):
+            pct = int((step - 1) / total * 100)
+            label = analyzer_labels.get(name, name)
+            console.print(f"  [{pct:3d}%] Analyzing {label}... ({findings_so_far} findings so far)")
+
         report = analyzer.analyze(
             enable_qos="qos" in enabled,
             enable_timing="timing" in enabled,
@@ -2288,6 +2304,7 @@ def deep_analyze_cmd(project_path: str, output: str, trace_launch: str, min_seve
             enable_complexity="complexity" in enabled,
             enable_message="message" in enabled,
             enable_parameter="parameter" in enabled,
+            progress_callback=on_progress,
         )
 
         # Filter by severity
@@ -2295,7 +2312,7 @@ def deep_analyze_cmd(project_path: str, output: str, trace_launch: str, min_seve
         min_level = severity_order[min_severity]
         filtered = [f for f in report.all_findings if severity_order.get(f.severity, 4) <= min_level]
 
-        console.print(f"  Found {len(filtered)} issues (severity >= {min_severity})")
+        console.print(f"  [100%] Complete — {len(report.all_findings)} total findings")
         console.print()
 
         # Display findings by category
