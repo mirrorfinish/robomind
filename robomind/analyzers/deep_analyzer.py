@@ -96,7 +96,7 @@ class DeepAnalysisReport:
                     "severity": f.severity,
                     "title": f.title,
                     "description": f.description,
-                    "file_path": f.file_path,
+                    "file_path": str(f.file_path) if f.file_path else None,
                     "line_number": f.line_number,
                     "affected_nodes": f.affected_nodes,
                     "recommendation": f.recommendation,
