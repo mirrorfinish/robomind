@@ -279,6 +279,77 @@ class PrometheusExporter:
                     labels={"endpoint": label},
                 )
 
+    def add_systemd_metrics(self, systemd_results: List[Dict]):
+        """Add systemd service status metrics.
+
+        Args:
+            systemd_results: List of dicts with 'host' and 'service' keys,
+                           where 'service' is a SystemdService object.
+        """
+        for entry in systemd_results:
+            host = entry.get("host", "unknown")
+            svc = entry.get("service")
+            if not svc:
+                continue
+
+            self.add_metric(
+                "systemd_service_enabled",
+                1 if svc.is_enabled else 0,
+                "Whether systemd service is enabled",
+                labels={"service": svc.name, "host": host},
+            )
+            self.add_metric(
+                "systemd_service_active",
+                1 if svc.is_active else 0,
+                "Whether systemd service is currently active",
+                labels={"service": svc.name, "host": host},
+            )
+
+    def add_ai_service_metrics(self, ai_services):
+        """Add AI/ML service metrics.
+
+        Args:
+            ai_services: AIServiceAnalysisResult from the ai_service_analyzer.
+        """
+        if not ai_services or not ai_services.services:
+            return
+
+        self.add_metric(
+            "ai_services_total",
+            len(ai_services.services),
+            "Total AI/ML services detected",
+        )
+
+        gpu_count = sum(1 for s in ai_services.services if s.gpu_required)
+        self.add_metric(
+            "ai_services_gpu_required",
+            gpu_count,
+            "AI services requiring GPU",
+        )
+
+        for svc in ai_services.services:
+            labels = {
+                "name": svc.name,
+                "framework": svc.framework,
+            }
+            if svc.model_name:
+                labels["model"] = svc.model_name
+            if svc.port:
+                labels["port"] = str(svc.port)
+
+            self.add_metric(
+                "ai_service_detected",
+                1,
+                "AI service detected in codebase",
+                labels=labels,
+            )
+            self.add_metric(
+                "ai_service_callers",
+                len(svc.caller_files),
+                "Number of files calling this AI service",
+                labels={"name": svc.name},
+            )
+
     def build(self) -> str:
         """Build complete Prometheus metrics output."""
         lines = []
@@ -319,6 +390,8 @@ def export_prometheus_metrics(
     http_comm_map=None,
     confidence_scores: List = None,
     http_health_results: Dict[str, Dict] = None,
+    systemd_results: List[Dict] = None,
+    ai_services=None,
     project_name: str = "robomind",
 ) -> bool:
     """
@@ -332,6 +405,8 @@ def export_prometheus_metrics(
         http_comm_map: Optional HTTP CommunicationMap
         confidence_scores: Optional list of confidence scores
         http_health_results: Optional dict of HTTP health check results
+        systemd_results: Optional list of systemd service results
+        ai_services: Optional AIServiceAnalysisResult
         project_name: Project name for metrics
 
     Returns:
@@ -350,5 +425,9 @@ def export_prometheus_metrics(
         exporter.add_confidence_metrics(confidence_scores)
     if http_health_results:
         exporter.add_http_health_metrics(http_health_results)
+    if systemd_results:
+        exporter.add_systemd_metrics(systemd_results)
+    if ai_services:
+        exporter.add_ai_service_metrics(ai_services)
 
     return exporter.export(output_path)

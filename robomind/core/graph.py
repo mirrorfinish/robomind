@@ -44,6 +44,8 @@ class ComponentType(Enum):
     PARAMETER = auto()
     LAUNCH_FILE = auto()
     HARDWARE_TARGET = auto()
+    AI_SERVICE = auto()
+    HTTP_ENDPOINT = auto()
 
 
 class EdgeType(Enum):
@@ -58,6 +60,8 @@ class EdgeType(Enum):
     LAUNCHES = auto()
     RUNS_ON = auto()
     DEPENDS_ON = auto()
+    HTTP_CALLS = auto()
+    INFERS_WITH = auto()
 
 
 @dataclass
@@ -578,6 +582,61 @@ class GraphBuilder:
             topic_id = f"topic:{topic_name}"
             if topic_id not in self._added_topics:
                 self._ensure_topic_node(topic_id, topic_name, topic.msg_type)
+
+    def add_ai_service(
+        self,
+        name: str,
+        framework: str,
+        port: Optional[int] = None,
+        model_name: Optional[str] = None,
+        endpoint_path: Optional[str] = None,
+        file_path: Optional[Path] = None,
+        line_number: Optional[int] = None,
+        hardware_target: Optional[str] = None,
+        gpu_required: bool = True,
+    ):
+        """Add an AI/ML inference service to the graph."""
+        ai_id = f"ai_service:{name}"
+        ai_node = GraphNode(
+            id=ai_id,
+            name=name,
+            component_type=ComponentType.AI_SERVICE,
+            file_path=file_path,
+            line_number=line_number,
+            hardware_target=hardware_target,
+            metadata={
+                "framework": framework,
+                "port": port,
+                "model_name": model_name,
+                "endpoint_path": endpoint_path,
+                "gpu_required": gpu_required,
+            },
+        )
+        self.graph.add_node(ai_node)
+        return ai_id
+
+    def add_http_connection(
+        self,
+        source_id: str,
+        target_id: str,
+        url: Optional[str] = None,
+        method: str = "GET",
+    ):
+        """Add an HTTP connection edge between two nodes."""
+        self.graph.add_edge(GraphEdge(
+            source=source_id,
+            target=target_id,
+            edge_type=EdgeType.HTTP_CALLS,
+            metadata={"url": url, "method": method},
+        ))
+
+    def add_inference_connection(self, node_id: str, ai_service_id: str):
+        """Add an inference connection from a node to an AI service."""
+        self.graph.add_edge(GraphEdge(
+            source=node_id,
+            target=ai_service_id,
+            edge_type=EdgeType.INFERS_WITH,
+        ))
 
     def add_hardware_target(self, node_name: str, hardware: str):
         """Associate a node with a hardware target."""

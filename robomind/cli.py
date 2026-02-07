@@ -647,12 +647,47 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
             console.print(f"  Communication links: {summary['total_links']} "
                          f"({summary['http_links']} HTTP, {summary['ros2_links']} ROS2)")
 
+        # Phase 3.8: AI service detection
+        ai_analysis_result = None
+        console.print("[bold]Phase 3.8: Detecting AI/ML services...[/bold]")
+        from robomind.analyzers.ai_service_analyzer import AIServiceAnalyzer
+
+        ai_analyzer = AIServiceAnalyzer()
+        ai_analysis_result = ai_analyzer.analyze_files(
+            [pf.path for pf in scan_result.python_files]
+        )
+
+        if ai_analysis_result.services:
+            console.print(f"  AI services: {len(ai_analysis_result.services)}")
+            for svc in ai_analysis_result.services:
+                port_str = f" :{svc.port}" if svc.port else ""
+                model_str = f" ({svc.model_name})" if svc.model_name else ""
+                console.print(f"    {svc.framework}{port_str}{model_str} [{len(svc.caller_files)} callers]")
+        else:
+            console.print("  No AI services detected")
+
         # Phase 4: Build graph and coupling (for exports)
         console.print("[bold]Phase 4: Building system graph...[/bold]")
-        from robomind.core.graph import build_system_graph
+        from robomind.core.graph import build_system_graph, GraphBuilder
         from robomind.analyzers.coupling import analyze_coupling
 
         system_graph = build_system_graph(all_nodes, topic_graph)
+
+        # Add AI services to the graph
+        if ai_analysis_result and ai_analysis_result.services:
+            builder = GraphBuilder()
+            builder.graph = system_graph
+            for svc in ai_analysis_result.services:
+                builder.add_ai_service(
+                    name=svc.name,
+                    framework=svc.framework,
+                    port=svc.port,
+                    model_name=svc.model_name,
+                    endpoint_path=svc.endpoint_path,
+                    file_path=svc.file_path,
+                    line_number=svc.line_number,
+                    gpu_required=svc.gpu_required,
+                )
         coupling_matrix = analyze_coupling(all_nodes, topic_graph)
 
         graph_stats = system_graph.stats()
@@ -682,6 +717,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 project_path=str(project_path),
                 http_comm_map=http_comm_map,
                 external_dependencies=external_dependencies if external_dependencies else None,
+                ai_services=ai_analysis_result,
             )
 
             if result.success:
@@ -701,6 +737,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 topic_graph=topic_graph,
                 project_name=project_path.name,
                 http_comm_map=http_comm_map,
+                ai_services=ai_analysis_result,
             )
 
             for name, result in results.items():
@@ -1331,6 +1368,10 @@ def remote(hosts: tuple, key: Optional[str], ros2_info: bool, verbose: bool):
               help="Export Prometheus metrics to file")
 @click.option("--check-http/--no-check-http", default=True,
               help="Check HTTP endpoints (default: enabled)")
+@click.option("--check-systemd", is_flag=True, default=False,
+              help="Check systemd service status (local or remote via --ssh)")
+@click.option("--deployment-manifest", type=click.Path(exists=True),
+              help="Path to deployment manifest YAML for systemd validation")
 @click.option("--exclude", "-e", multiple=True,
               help="Glob patterns for paths to exclude")
 @click.option("--use-default-excludes/--no-default-excludes", default=True,
@@ -1338,6 +1379,7 @@ def remote(hosts: tuple, key: Optional[str], ros2_info: bool, verbose: bool):
 @click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 def validate(project_path: str, ssh: Optional[str], output: Optional[str],
              export_prometheus: Optional[str], check_http: bool,
+             check_systemd: bool, deployment_manifest: Optional[str],
              exclude: tuple, use_default_excludes: bool, verbose: bool):
     """Validate static analysis against a live ROS2 system.
 
@@ -1440,11 +1482,105 @@ def validate(project_path: str, ssh: Optional[str], output: Optional[str],
         result = validator.validate(check_http=check_http)
 
         if not result.validated:
-            console.print(f"[bold red]Validation failed:[/bold red] {result.error}")
-            sys.exit(1)
+            console.print(f"[bold yellow]ROS2 validation unavailable:[/bold yellow] {result.error}")
+            if not (check_systemd or deployment_manifest):
+                sys.exit(1)
+            console.print("  [dim]Continuing with systemd checks...[/dim]")
 
-        console.print(f"  Live: {len(result.live_info.nodes)} nodes, "
-                     f"{len(result.live_info.topics)} topics")
+        if result.live_info and result.live_info.available:
+            console.print(f"  Live: {len(result.live_info.nodes)} nodes, "
+                         f"{len(result.live_info.topics)} topics")
+
+        # Phase 3: Systemd service validation
+        systemd_results = []
+        if check_systemd or deployment_manifest:
+            console.print("[bold]Phase 3: Checking systemd services...[/bold]")
+            from robomind.deployment.systemd_discovery import SystemdDiscovery
+
+            discovery = SystemdDiscovery(ssh_host=ssh)
+
+            if deployment_manifest:
+                from robomind.deployment.manifest import load_deployment_manifest
+                manifest = load_deployment_manifest(Path(deployment_manifest))
+
+                # If SSH host is provided, find matching host in manifest
+                if ssh:
+                    # Check all hosts, match by SSH host or check local
+                    for jetson_name, jetson_config in manifest.jetsons.items():
+                        is_local = jetson_config.hostname in ("localhost", "thor.local")
+                        is_ssh_target = ssh and (
+                            jetson_config.hostname in ssh or
+                            jetson_name in ssh
+                        )
+                        if is_local or is_ssh_target:
+                            host_discovery = SystemdDiscovery(
+                                ssh_host=ssh if is_ssh_target else None
+                            )
+                            services = host_discovery.discover_from_manifest(
+                                jetson_config.systemd_services
+                            )
+                            for svc in services:
+                                svc_info = {
+                                    "host": jetson_name,
+                                    "service": svc,
+                                }
+                                systemd_results.append(svc_info)
+                else:
+                    # Local only — check local host services
+                    for jetson_name, jetson_config in manifest.jetsons.items():
+                        if jetson_config.hostname in ("localhost", "thor.local"):
+                            services = discovery.discover_from_manifest(
+                                jetson_config.systemd_services
+                            )
+                            for svc in services:
+                                systemd_results.append({
+                                    "host": jetson_name,
+                                    "service": svc,
+                                })
+            else:
+                # Auto-discover with common patterns
+                patterns = ["betaray*.service", "thor-*.service"]
+                for pattern in patterns:
+                    services = discovery.discover(pattern)
+                    for svc in services:
+                        systemd_results.append({
+                            "host": "local" if not ssh else ssh,
+                            "service": svc,
+                        })
+
+            # Display systemd results
+            if systemd_results:
+                systemd_table = Table(title="Systemd Services")
+                systemd_table.add_column("Host", style="cyan")
+                systemd_table.add_column("Service", style="white")
+                systemd_table.add_column("Enabled", justify="center")
+                systemd_table.add_column("Active", justify="center")
+                systemd_table.add_column("Status", style="dim")
+
+                for entry in systemd_results:
+                    svc = entry["service"]
+                    enabled_str = "[green]yes[/green]" if svc.is_enabled else "[red]no[/red]"
+                    active_str = "[green]active[/green]" if svc.is_active else "[red]inactive[/red]"
+                    systemd_table.add_row(
+                        entry["host"],
+                        svc.name,
+                        enabled_str,
+                        active_str,
+                        svc.status,
+                    )
+
+                console.print(systemd_table)
+
+                active_count = sum(1 for e in systemd_results if e["service"].is_active)
+                total_count = len(systemd_results)
+                if active_count == total_count:
+                    console.print(f"  [green]All {total_count} services active[/green]")
+                else:
+                    console.print(
+                        f"  [yellow]{active_count}/{total_count} services active[/yellow]"
+                    )
+            else:
+                console.print("  [dim]No services found[/dim]")
 
         # Display results
         summary = result.summary()
@@ -1481,8 +1617,17 @@ def validate(project_path: str, ssh: Optional[str], output: Optional[str],
         # Output to JSON
         if output:
             output_path = Path(output)
+            output_data = result.to_dict()
+            if systemd_results:
+                output_data["systemd_services"] = [
+                    {
+                        "host": e["host"],
+                        **e["service"].to_dict(),
+                    }
+                    for e in systemd_results
+                ]
             with open(output_path, "w") as f:
-                json.dump(result.to_dict(), f, indent=2)
+                json.dump(output_data, f, indent=2)
             console.print(f"\n[green]Results saved to: {output_path}[/green]")
 
         # Export Prometheus metrics

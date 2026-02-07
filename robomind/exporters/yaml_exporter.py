@@ -65,6 +65,7 @@ class YAMLExporter:
         self.parameters: Optional[ParameterCollection] = None
         self.hardware_targets: Dict[str, List[str]] = {}  # hardware -> node names
         self.http_comm_map = None  # Optional HTTP communication map
+        self.ai_services = None  # Optional AIServiceAnalysisResult
 
     def set_project_info(self, name: str, version: str = "auto"):
         """Set project metadata."""
@@ -105,6 +106,10 @@ class YAMLExporter:
     def set_http_communication(self, http_comm_map):
         """Set HTTP communication map."""
         self.http_comm_map = http_comm_map
+
+    def set_ai_services(self, ai_services):
+        """Set AI service analysis result."""
+        self.ai_services = ai_services
 
     def _estimate_tokens(self, text: str) -> int:
         """Rough token estimate (4 chars per token average)."""
@@ -401,6 +406,22 @@ class YAMLExporter:
 
             context["http_communication"] = http_info
 
+        # AI Services
+        if self.ai_services and self.ai_services.services:
+            ai_info = {}
+            for svc in self.ai_services.services:
+                entry = {"framework": svc.framework}
+                if svc.model_name:
+                    entry["model"] = svc.model_name
+                if svc.port:
+                    entry["port"] = svc.port
+                if svc.host:
+                    entry["host"] = svc.host
+                entry["gpu_required"] = svc.gpu_required
+                entry["callers"] = len(svc.caller_files)
+                ai_info[svc.name] = entry
+            context["ai_services"] = ai_info
+
         return context
 
     def export_system_context(self, output_path: Path) -> ExportResult:
@@ -471,6 +492,7 @@ def export_yaml_context(
     launch_topology: Optional[LaunchTopology] = None,
     parameters: Optional[ParameterCollection] = None,
     http_comm_map=None,
+    ai_services=None,
     project_name: str = "Unknown",
     project_version: str = "auto",
     hardware_mapping: Optional[Dict[str, List[str]]] = None,
@@ -510,6 +532,8 @@ def export_yaml_context(
         exporter.set_parameters(parameters)
     if http_comm_map:
         exporter.set_http_communication(http_comm_map)
+    if ai_services:
+        exporter.set_ai_services(ai_services)
     if hardware_mapping:
         exporter.set_hardware_mapping(hardware_mapping)
 

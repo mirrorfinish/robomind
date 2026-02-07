@@ -111,6 +111,7 @@ class JSONExporter:
         self.parameters: Optional[ParameterCollection] = None
         self.http_comm_map = None  # Optional HTTP communication map
         self.external_dependencies: List[Dict] = []  # External ROS2 packages
+        self.ai_services = None  # Optional AIServiceAnalysisResult
 
     def set_metadata(
         self,
@@ -162,6 +163,10 @@ class JSONExporter:
     def set_external_dependencies(self, external_deps: List[Dict]):
         """Set external ROS2 package dependencies (from launch files)."""
         self.external_dependencies = external_deps
+
+    def set_ai_services(self, ai_services):
+        """Set AI service analysis result."""
+        self.ai_services = ai_services
 
     def _update_summary_from_nodes(self):
         """Update summary statistics from nodes."""
@@ -245,6 +250,10 @@ class JSONExporter:
         if self.external_dependencies:
             result["external_dependencies"] = self.external_dependencies
 
+        # AI services
+        if self.ai_services:
+            result["ai_services"] = self.ai_services.to_dict()
+
         return result
 
     def export(self, output_path: Path, indent: int = 2) -> ExportResult:
@@ -305,6 +314,7 @@ def export_analysis_json(
     parameters: Optional[ParameterCollection] = None,
     http_comm_map=None,
     external_dependencies: Optional[List[Dict]] = None,
+    ai_services=None,
     project_name: str = "Unknown",
     project_path: str = "",
 ) -> ExportResult:
@@ -345,6 +355,8 @@ def export_analysis_json(
         exporter.set_http_communication(http_comm_map)
     if external_dependencies:
         exporter.set_external_dependencies(external_dependencies)
+    if ai_services:
+        exporter.set_ai_services(ai_services)
 
     return exporter.export(output_path)
 

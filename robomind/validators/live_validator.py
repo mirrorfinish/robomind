@@ -224,10 +224,26 @@ class LiveValidator:
         return topics
 
     def _run_command(self, cmd: List[str], timeout: int = 10) -> Optional[str]:
-        """Run a command locally or via SSH."""
+        """Run a command locally or via SSH.
+
+        When running via SSH, ROS2 commands are automatically wrapped with
+        'source /opt/ros/{distro}/setup.bash' to ensure the ROS2 environment
+        is available in non-interactive shells.
+        """
         try:
             if self.ssh_host:
-                full_cmd = ["ssh", self.ssh_host] + cmd
+                # Check if this is a ROS2 command that needs environment sourcing
+                is_ros2_cmd = cmd and cmd[0] == "ros2"
+                if is_ros2_cmd:
+                    # Source ROS2 setup before running the command via SSH
+                    # SSH concatenates args and runs through remote shell
+                    cmd_str = " ".join(cmd)
+                    full_cmd = [
+                        "ssh", self.ssh_host,
+                        f"source /opt/ros/{self.ros2_distro}/setup.bash && {cmd_str}",
+                    ]
+                else:
+                    full_cmd = ["ssh", self.ssh_host] + cmd
             else:
                 full_cmd = cmd
 
@@ -492,8 +508,8 @@ class LiveValidator:
             code_topic = code_normalized[norm_topic]
             live_topic = live_normalized[norm_topic]
 
-            code_type = self._code_topics[code_topic].get("type", "").split("/")[-1]
-            live_type = live.topics[live_topic].get("type", "").split("/")[-1]
+            code_type = (self._code_topics[code_topic].get("type") or "").split("/")[-1]
+            live_type = (live.topics[live_topic].get("type") or "").split("/")[-1]
 
             if code_type and live_type and code_type != live_type:
                 result.diffs.append(ValidationDiff(

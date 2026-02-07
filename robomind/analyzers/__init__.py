@@ -14,6 +14,7 @@ Includes:
 - message_analyzer.py - Message type checking
 - parameter_analyzer.py - Parameter validation
 - deep_analyzer.py - Unified deep analysis
+- ai_service_analyzer.py - AI/ML inference service detection
 """
 
 from robomind.analyzers.coupling import (
@@ -87,6 +88,12 @@ from robomind.analyzers.deep_analyzer import (
     UnifiedFinding,
     deep_analyze,
 )
+from robomind.analyzers.ai_service_analyzer import (
+    AIServiceAnalyzer,
+    AIServiceInfo,
+    AIServiceAnalysisResult,
+    analyze_ai_services,
+)
 
 __all__ = [
     # Coupling
@@ -148,4 +155,9 @@ __all__ = [
     "DeepAnalysisReport",
     "UnifiedFinding",
     "deep_analyze",
+    # AI Services
+    "AIServiceAnalyzer",
+    "AIServiceInfo",
+    "AIServiceAnalysisResult",
+    "analyze_ai_services",
 ]

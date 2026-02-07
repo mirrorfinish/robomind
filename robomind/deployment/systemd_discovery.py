@@ -332,11 +332,12 @@ class SystemdDiscovery:
             service_names: List of service names to find
 
         Returns:
-            List of discovered services
+            List of discovered services (with status checked)
         """
         services = []
 
         for name in service_names:
+            found = False
             # Search in standard locations
             for service_dir in self.service_dirs:
                 service_file = service_dir / f"{name}.service"
@@ -344,7 +345,17 @@ class SystemdDiscovery:
                     service = self._parse_service_file(service_file)
                     if service:
                         services.append(service)
+                        found = True
                         break
+
+            # If file not found locally, still check status (service may exist remotely)
+            if not found:
+                service = SystemdService(name=name)
+                services.append(service)
+
+        # Get status for all services
+        for service in services:
+            self._get_service_status(service)
 
         return services
 

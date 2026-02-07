@@ -111,6 +111,7 @@ class SSHConnection:
     """
     host: RemoteHost
     connected: bool = False
+    ros2_distro: str = "humble"
     _last_error: Optional[str] = None
 
     def _build_ssh_args(self) -> List[str]:
@@ -151,14 +152,21 @@ class SSHConnection:
             self.connected = False
             return False
 
-    def execute(self, command: str, timeout: int = 60) -> Tuple[int, str, str]:
+    def execute(self, command: str, timeout: int = 60, source_ros2: bool = False) -> Tuple[int, str, str]:
         """
         Execute command on remote host.
+
+        Args:
+            command: Command to execute
+            timeout: Timeout in seconds
+            source_ros2: If True, source ROS2 setup.bash before running command
 
         Returns:
             Tuple of (return_code, stdout, stderr)
         """
         try:
+            if source_ros2:
+                command = f"source /opt/ros/{self.ros2_distro}/setup.bash && {command}"
             cmd = ["ssh"] + self._build_ssh_args() + [
                 self.host.connection_string,
                 command,
@@ -308,9 +316,9 @@ class SSHAnalyzer:
     4. Tag results with hardware target
     """
 
-    def __init__(self, host: RemoteHost):
+    def __init__(self, host: RemoteHost, ros2_distro: str = "humble"):
         self.host = host
-        self.connection = SSHConnection(host)
+        self.connection = SSHConnection(host, ros2_distro=ros2_distro)
         self._temp_dir: Optional[Path] = None
 
     def connect(self) -> bool:
@@ -439,17 +447,17 @@ class SSHAnalyzer:
         }
 
         # Get node list
-        rc, stdout, stderr = self.connection.execute("ros2 node list 2>/dev/null || true")
+        rc, stdout, stderr = self.connection.execute("ros2 node list 2>/dev/null || true", source_ros2=True)
         if rc == 0:
             info["nodes"] = [n.strip() for n in stdout.strip().split("\n") if n.strip()]
 
         # Get topic list
-        rc, stdout, stderr = self.connection.execute("ros2 topic list 2>/dev/null || true")
+        rc, stdout, stderr = self.connection.execute("ros2 topic list 2>/dev/null || true", source_ros2=True)
         if rc == 0:
             info["topics"] = [t.strip() for t in stdout.strip().split("\n") if t.strip()]
 
         # Get service list
-        rc, stdout, stderr = self.connection.execute("ros2 service list 2>/dev/null || true")
+        rc, stdout, stderr = self.connection.execute("ros2 service list 2>/dev/null || true", source_ros2=True)
         if rc == 0:
             info["services"] = [s.strip() for s in stdout.strip().split("\n") if s.strip()]
 
