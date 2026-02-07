@@ -112,6 +112,7 @@ class JSONExporter:
         self.http_comm_map = None  # Optional HTTP communication map
         self.external_dependencies: List[Dict] = []  # External ROS2 packages
         self.ai_services = None  # Optional AIServiceAnalysisResult
+        self.message_definitions = None  # Optional Dict from MessageDatabase
 
     def set_metadata(
         self,
@@ -167,6 +168,10 @@ class JSONExporter:
     def set_ai_services(self, ai_services):
         """Set AI service analysis result."""
         self.ai_services = ai_services
+
+    def set_message_definitions(self, message_defs: dict):
+        """Set message definitions dict (from MessageDatabase.to_dict() filtered to used types)."""
+        self.message_definitions = message_defs
 
     def _update_summary_from_nodes(self):
         """Update summary statistics from nodes."""
@@ -254,6 +259,10 @@ class JSONExporter:
         if self.ai_services:
             result["ai_services"] = self.ai_services.to_dict()
 
+        # Message definitions (only types used by detected nodes)
+        if self.message_definitions:
+            result["message_definitions"] = self.message_definitions
+
         return result
 
     def export(self, output_path: Path, indent: int = 2) -> ExportResult:
@@ -315,6 +324,7 @@ def export_analysis_json(
     http_comm_map=None,
     external_dependencies: Optional[List[Dict]] = None,
     ai_services=None,
+    message_definitions: Optional[dict] = None,
     project_name: str = "Unknown",
     project_path: str = "",
 ) -> ExportResult:
@@ -331,6 +341,8 @@ def export_analysis_json(
         parameters: Optional ParameterCollection
         http_comm_map: Optional HTTP CommunicationMap
         external_dependencies: Optional list of external ROS2 packages
+        ai_services: Optional AIServiceAnalysisResult
+        message_definitions: Optional dict of message definitions
         project_name: Name of the project
         project_path: Path to the project
 
@@ -357,6 +369,8 @@ def export_analysis_json(
         exporter.set_external_dependencies(external_dependencies)
     if ai_services:
         exporter.set_ai_services(ai_services)
+    if message_definitions:
+        exporter.set_message_definitions(message_definitions)
 
     return exporter.export(output_path)
 

@@ -128,6 +128,48 @@ async def list_tools() -> list[Tool]:
                 }
             }
         ),
+        Tool(
+            name="message_schema",
+            description="Look up ROS2 message/service/action definition fields. Supports fuzzy matching (e.g. 'LaserScan' finds 'sensor_msgs/msg/LaserScan')",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "type_name": {
+                        "type": "string",
+                        "description": "Message type name (e.g., 'sensor_msgs/msg/LaserScan', 'LaserScan', 'Twist')"
+                    }
+                },
+                "required": ["type_name"]
+            }
+        ),
+        Tool(
+            name="impact",
+            description="Analyze what breaks if a topic, node, or message type changes. Shows directly and cascade affected entities with severity levels",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "What to analyze (topic name, node name, or message type)"
+                    },
+                    "target_type": {
+                        "type": "string",
+                        "description": "Type of target: 'topic', 'node', or 'message_type'",
+                        "enum": ["topic", "node", "message_type"],
+                        "default": "topic"
+                    }
+                },
+                "required": ["target"]
+            }
+        ),
+        Tool(
+            name="ai_services",
+            description="Get detected AI/ML inference services (Ollama, vLLM, TensorRT, etc) with framework, model, port, and caller information",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
     ]
 
 
@@ -197,6 +239,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             min_score = arguments.get("min_score", 0.3)
             result = graph.get_coupling_pairs(min_score)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "message_schema":
+            type_name = arguments.get("type_name", "")
+            result = graph.get_message_schema(type_name)
+            if result:
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            else:
+                return [TextContent(type="text", text=f"Message type '{type_name}' not found. Run 'robomind analyze' with message parsing enabled.")]
+
+        elif name == "impact":
+            target = arguments.get("target", "")
+            target_type = arguments.get("target_type", "topic")
+            result = graph.get_impact(target, target_type)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "ai_services":
+            result = graph.get_ai_services()
+            if result:
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            else:
+                return [TextContent(type="text", text="No AI services detected. Run 'robomind analyze' to detect AI/ML services.")]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

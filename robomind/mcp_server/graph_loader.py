@@ -218,3 +218,187 @@ class SystemGraph:
             if pubs and not subs:
                 orphaned['no_subscribers'].append(name)
         return orphaned
+
+    def get_message_schema(self, type_name: str) -> Optional[Dict[str, Any]]:
+        """Look up a message definition by type name (supports fuzzy matching)."""
+        graph = self._load_graph()
+        msg_defs = graph.get('message_definitions', {})
+        if not msg_defs:
+            return None
+
+        # Exact match
+        if type_name in msg_defs:
+            return msg_defs[type_name]
+
+        # Short name match (e.g. "LaserScan" -> "sensor_msgs/msg/LaserScan")
+        type_lower = type_name.lower()
+        for full_name, definition in msg_defs.items():
+            short = full_name.split('/')[-1]
+            if short.lower() == type_lower:
+                return {**definition, '_matched_as': full_name}
+
+        # Partial match
+        matches = []
+        for full_name, definition in msg_defs.items():
+            if type_lower in full_name.lower():
+                matches.append({**definition, '_matched_as': full_name})
+
+        if len(matches) == 1:
+            return matches[0]
+        elif matches:
+            return {
+                'ambiguous': True,
+                'matches': [m['_matched_as'] for m in matches],
+                'hint': 'Use the full name for exact match',
+            }
+
+        return None
+
+    def get_impact(self, target: str, target_type: str = "topic") -> Dict[str, Any]:
+        """Analyze impact of a change using the graph data."""
+        graph = self._load_graph()
+        nodes = graph.get('nodes', [])
+        topics_data = graph.get('topics', {})
+        topics_dict = topics_data.get('topics', {}) if isinstance(topics_data, dict) else {}
+
+        # Build publisher/subscriber indices from graph data
+        topic_publishers: Dict[str, List[str]] = {}
+        topic_subscribers: Dict[str, List[str]] = {}
+        node_pub_topics: Dict[str, List[str]] = {}
+        node_sub_topics: Dict[str, List[str]] = {}
+        topic_types: Dict[str, str] = {}
+
+        for node in nodes:
+            name = node.get('name', '')
+            pub_topics = []
+            for pub in node.get('publishers', []):
+                topic = pub.get('topic', '')
+                if topic:
+                    topic_publishers.setdefault(topic, []).append(name)
+                    pub_topics.append(topic)
+                    if pub.get('msg_type'):
+                        topic_types[topic] = pub['msg_type']
+            node_pub_topics[name] = pub_topics
+
+            sub_topics = []
+            for sub in node.get('subscribers', []):
+                topic = sub.get('topic', '')
+                if topic:
+                    topic_subscribers.setdefault(topic, []).append(name)
+                    sub_topics.append(topic)
+                    if sub.get('msg_type') and topic not in topic_types:
+                        topic_types[topic] = sub['msg_type']
+            node_sub_topics[name] = sub_topics
+
+        # Safety-critical topics
+        critical_topics = {"/cmd_vel", "/emergency_stop", "/motor/command",
+                          "/betaray/motors/cmd_vel", "/robot/cmd_vel",
+                          "/betaray/emergency_stop"}
+
+        def get_severity(topic: str) -> str:
+            if topic in critical_topics:
+                return "critical"
+            if any(topic.startswith(p) for p in ("/betaray/debug/", "/betaray/log/",
+                                                  "/diagnostics", "/rosout", "/parameter_events")):
+                return "low"
+            return "medium"
+
+        result = {"target": target, "target_type": target_type,
+                  "directly_affected": [], "cascade_affected": []}
+
+        if target_type == "topic":
+            sev = get_severity(target)
+            for pub in topic_publishers.get(target, []):
+                result["directly_affected"].append({
+                    "name": pub, "kind": "node", "impact_type": "lost_publisher",
+                    "severity": "critical" if sev == "critical" else "high",
+                    "description": f"Publishes to {target}",
+                })
+            for sub in topic_subscribers.get(target, []):
+                result["directly_affected"].append({
+                    "name": sub, "kind": "node", "impact_type": "broken_subscriber",
+                    "severity": "critical" if sev == "critical" else "high",
+                    "description": f"Subscribes to {target}",
+                })
+            # Cascade
+            affected = {i["name"] for i in result["directly_affected"]}
+            for sub in topic_subscribers.get(target, []):
+                for downstream_topic in node_pub_topics.get(sub, []):
+                    if downstream_topic == target:
+                        continue
+                    for ds_sub in topic_subscribers.get(downstream_topic, []):
+                        if ds_sub not in affected:
+                            affected.add(ds_sub)
+                            result["cascade_affected"].append({
+                                "name": ds_sub, "kind": "node", "impact_type": "cascade",
+                                "severity": "medium",
+                                "description": f"Downstream of {sub} via {downstream_topic}",
+                            })
+
+        elif target_type == "node":
+            for topic in node_pub_topics.get(target, []):
+                other_pubs = [n for n in topic_publishers.get(topic, []) if n != target]
+                for sub in topic_subscribers.get(topic, []):
+                    if sub == target:
+                        continue
+                    if not other_pubs:
+                        result["directly_affected"].append({
+                            "name": sub, "kind": "node", "impact_type": "broken_subscriber",
+                            "severity": get_severity(topic),
+                            "description": f"Loses {topic} (no remaining publishers)",
+                        })
+                    else:
+                        result["directly_affected"].append({
+                            "name": sub, "kind": "node", "impact_type": "lost_publisher",
+                            "severity": "low",
+                            "description": f"Loses one publisher on {topic} ({len(other_pubs)} remaining)",
+                        })
+
+        elif target_type == "message_type":
+            type_short = target.split("/")[-1]
+            for topic, ttype in topic_types.items():
+                if ttype == target or ttype.endswith(f"/{type_short}") or ttype == type_short:
+                    for pub in topic_publishers.get(topic, []):
+                        result["directly_affected"].append({
+                            "name": pub, "kind": "node", "impact_type": "type_user",
+                            "severity": "high",
+                            "description": f"Publishes {target} on {topic}",
+                        })
+                    for sub in topic_subscribers.get(topic, []):
+                        result["directly_affected"].append({
+                            "name": sub, "kind": "node", "impact_type": "type_user",
+                            "severity": "high",
+                            "description": f"Subscribes to {target} on {topic}",
+                        })
+
+        # Deduplicate
+        seen = set()
+        deduped = []
+        for item in result["directly_affected"]:
+            key = (item["name"], item["impact_type"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(item)
+        result["directly_affected"] = deduped
+
+        # Summary counts
+        all_items = result["directly_affected"] + result["cascade_affected"]
+        by_severity = {}
+        for item in all_items:
+            by_severity[item["severity"]] = by_severity.get(item["severity"], 0) + 1
+        result["summary"] = {
+            "total_affected": len(all_items),
+            "directly_affected": len(result["directly_affected"]),
+            "cascade_affected": len(result["cascade_affected"]),
+            "by_severity": by_severity,
+        }
+
+        return result
+
+    def get_ai_services(self) -> Optional[Dict[str, Any]]:
+        """Get AI/ML service analysis results."""
+        graph = self._load_graph()
+        ai_data = graph.get('ai_services')
+        if not ai_data:
+            return None
+        return ai_data

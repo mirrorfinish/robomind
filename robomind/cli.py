@@ -666,6 +666,37 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
         else:
             console.print("  No AI services detected")
 
+        # Phase 3.9: Parse message definitions
+        message_defs_dict = None
+        console.print("[bold]Phase 3.9: Parsing message definitions...[/bold]")
+        try:
+            from robomind.ros2.message_parser import load_message_database
+            msg_db = load_message_database(project_path=project_path, load_standard=True)
+
+            # Collect all message types used by detected nodes
+            used_types = set()
+            for node in all_nodes:
+                for pub in node.publishers:
+                    if pub.msg_type:
+                        used_types.add(pub.msg_type)
+                for sub in node.subscribers:
+                    if sub.msg_type:
+                        used_types.add(sub.msg_type)
+                for svc in node.services:
+                    if svc.srv_type:
+                        used_types.add(svc.srv_type)
+
+            # Filter to only used types
+            used_messages = msg_db.get_used_messages(list(used_types))
+            if used_messages:
+                message_defs_dict = {k: v.to_dict() for k, v in used_messages.items()}
+                console.print(f"  Resolved {len(used_messages)} message schemas "
+                             f"(from {len(msg_db.messages)} available)")
+            else:
+                console.print("  No message types resolved")
+        except Exception as e:
+            console.print(f"  [yellow]Message parsing skipped:[/yellow] {e}")
+
         # Phase 4: Build graph and coupling (for exports)
         console.print("[bold]Phase 4: Building system graph...[/bold]")
         from robomind.core.graph import build_system_graph, GraphBuilder
@@ -718,6 +749,7 @@ def analyze(project_path: str, output: str, formats: tuple, exclude: tuple,
                 http_comm_map=http_comm_map,
                 external_dependencies=external_dependencies if external_dependencies else None,
                 ai_services=ai_analysis_result,
+                message_definitions=message_defs_dict,
             )
 
             if result.success:
@@ -2345,6 +2377,182 @@ def deep_analyze_cmd(project_path: str, output: str, trace_launch: str, min_seve
 
 
 @main.command()
+@click.argument("project_path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
+@click.option("--topic", type=str, help="Analyze impact of topic change/removal")
+@click.option("--node", type=str, help="Analyze impact of node removal")
+@click.option("--file", "file_path", type=str, help="Analyze impact of file change")
+@click.option("--message-type", type=str, help="Analyze impact of message type change")
+@click.option("--output", "-o", type=click.Path(), help="Output JSON file path")
+@click.option("--exclude", "-e", multiple=True,
+              help="Glob patterns for paths to exclude")
+@click.option("--use-default-excludes/--no-default-excludes", default=True,
+              help="Apply default excludes for archive/backup/test dirs (default: enabled)")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
+def impact(project_path: str, topic: Optional[str], node: Optional[str],
+           file_path: Optional[str], message_type: Optional[str],
+           output: Optional[str], exclude: tuple, use_default_excludes: bool,
+           verbose: bool):
+    """Analyze impact of changes to the ROS2 system.
+
+    Shows what breaks if you rename a topic, remove a node, change a message
+    type, or modify a source file.
+
+    \b
+    Examples:
+        robomind impact ~/betaray --topic /cmd_vel
+        robomind impact ~/betaray --node motor_controller_node
+        robomind impact ~/betaray --file path/to/file.py
+        robomind impact ~/betaray --message-type sensor_msgs/msg/LaserScan
+    """
+    from robomind.core.scanner import ProjectScanner
+    from robomind.core.parser import PythonParser
+    from robomind.ros2.node_extractor import ROS2NodeExtractor
+    from robomind.ros2.topic_extractor import TopicExtractor
+    from robomind.analyzers.impact_analyzer import ImpactAnalyzer
+
+    project_path = Path(project_path).resolve()
+    exclude_patterns = list(exclude) if exclude else None
+
+    # Validate: exactly one target must be specified
+    targets = [t for t in [topic, node, file_path, message_type] if t]
+    if len(targets) != 1:
+        console.print("[bold red]Error:[/bold red] Specify exactly one of --topic, --node, --file, or --message-type")
+        sys.exit(1)
+
+    # Determine target
+    if topic:
+        target, target_type, target_label = topic, "topic", f"topic {topic}"
+    elif node:
+        target, target_type, target_label = node, "node", f"node {node}"
+    elif file_path:
+        target, target_type, target_label = file_path, "file", f"file {file_path}"
+    else:
+        target, target_type, target_label = message_type, "message_type", f"message type {message_type}"
+
+    console.print(f"\n[bold blue]RoboMind Impact Analysis[/bold blue]")
+    console.print(f"Project: [cyan]{project_path}[/cyan]")
+    console.print(f"Target: [cyan]{target_label}[/cyan]")
+    console.print()
+
+    try:
+        # Phase 1: Extract nodes
+        console.print("[bold]Phase 1: Analyzing project...[/bold]")
+        scanner = ProjectScanner(
+            project_path,
+            exclude_patterns=exclude_patterns,
+            use_default_excludes=use_default_excludes,
+        )
+        scan_result = scanner.scan()
+
+        parser = PythonParser()
+        node_extractor = ROS2NodeExtractor()
+        topic_extractor = TopicExtractor()
+        all_nodes = []
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Extracting...", total=None)
+            for pf in scan_result.python_files:
+                pr = parser.parse_file(pf.path)
+                if pr and pr.has_ros2_imports():
+                    nodes = node_extractor.extract_from_file(pf.path, pf.package_name)
+                    all_nodes.extend(nodes)
+                    topic_extractor.add_nodes(nodes)
+            progress.update(task, completed=True)
+
+        topic_graph = topic_extractor.build()
+        console.print(f"  Found {len(all_nodes)} nodes, {len(topic_graph.topics)} topics")
+
+        # Phase 2: Impact analysis
+        console.print("[bold]Phase 2: Analyzing impact...[/bold]")
+        analyzer = ImpactAnalyzer(all_nodes, topic_graph)
+
+        if target_type == "topic":
+            result = analyzer.analyze_topic_change(target)
+        elif target_type == "node":
+            result = analyzer.analyze_node_removal(target)
+        elif target_type == "message_type":
+            result = analyzer.analyze_message_type_change(target)
+        else:
+            result = analyzer.analyze_file_change(target)
+
+        summary = result.summary()
+
+        if summary["total_affected"] == 0:
+            console.print(f"\n[yellow]No affected entities found for {target_label}[/yellow]")
+
+            # Suggest matches
+            if target_type == "topic":
+                all_topics = list(analyzer._topic_publishers.keys()) + list(analyzer._topic_subscribers.keys())
+                matches = [t for t in set(all_topics) if target.lower() in t.lower()]
+                if matches:
+                    console.print("\n[yellow]Did you mean one of these topics?[/yellow]")
+                    for m in sorted(matches)[:10]:
+                        console.print(f"  {m}")
+            elif target_type == "node":
+                matches = [n.name for n in all_nodes if target.lower() in n.name.lower()]
+                if matches:
+                    console.print("\n[yellow]Did you mean one of these nodes?[/yellow]")
+                    for m in matches[:10]:
+                        console.print(f"  {m}")
+        else:
+            # Display results
+            severity_colors = {
+                "critical": "red bold",
+                "high": "yellow",
+                "medium": "cyan",
+                "low": "dim",
+            }
+
+            console.print(f"\n[bold]=== IMPACT ANALYSIS ===[/bold]")
+            console.print(f"  Total affected: {summary['total_affected']}")
+            console.print(f"  Directly affected: {summary['directly_affected']}")
+            console.print(f"  Cascade affected: {summary['cascade_affected']}")
+            for sev, count in sorted(summary["by_severity"].items(),
+                                     key=lambda x: ["critical", "high", "medium", "low"].index(x[0])):
+                color = severity_colors.get(sev, "white")
+                console.print(f"  [{color}]{sev.upper()}: {count}[/{color}]")
+
+            if result.directly_affected:
+                console.print(f"\n[bold]Directly Affected:[/bold]")
+                for item in result.directly_affected:
+                    color = severity_colors.get(item.severity, "white")
+                    console.print(f"  [{color}][{item.severity.upper()}][/{color}] {item.name} ({item.kind})")
+                    console.print(f"    {item.description}")
+                    if verbose and item.file_path:
+                        console.print(f"    [dim]{item.file_path}[/dim]")
+
+            if result.cascade_affected:
+                console.print(f"\n[bold]Cascade Affected:[/bold]")
+                for item in result.cascade_affected:
+                    color = severity_colors.get(item.severity, "white")
+                    console.print(f"  [{color}][{item.severity.upper()}][/{color}] {item.name} ({item.kind})")
+                    console.print(f"    {item.description}")
+                    if verbose and item.file_path:
+                        console.print(f"    [dim]{item.file_path}[/dim]")
+
+        # Output to JSON
+        if output:
+            output_path = Path(output)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w") as f:
+                json.dump(result.to_dict(), f, indent=2)
+            console.print(f"\n[green]Results saved to: {output_path}[/green]")
+
+        console.print(f"\n[bold green]Impact analysis complete![/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
 def info():
     """Show information about RoboMind."""
     from robomind import __version__
@@ -2371,6 +2579,8 @@ def info():
     console.print("  [green]\u2713[/green] Trace data flow paths between nodes")
     console.print("  [green]\u2713[/green] Default excludes (archive/backup/test/deprecated)")
     console.print("  [green]\u2713[/green] Confidence scoring (filter false positives)")
+    console.print("  [green]\u2713[/green] Impact analysis (what breaks if X changes?)")
+    console.print("  [green]\u2713[/green] Message definition parsing (.msg/.srv/.action)")
 
     console.print("\n[bold]Quick Start:[/bold]")
     console.print("  robomind scan ~/my_robot_project")
@@ -2382,6 +2592,7 @@ def info():
     console.print("  robomind validate ~/my_robot_project")
     console.print("  robomind report ~/my_robot_project -o REPORT.md")
     console.print("  robomind trace ~/project --from sensor --to controller")
+    console.print("  robomind impact ~/project --topic /cmd_vel")
     console.print("  robomind remote robot@jetson.local --ros2-info")
 
     console.print("\n[bold]Distributed Analysis:[/bold]")

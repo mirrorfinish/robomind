@@ -94,6 +94,12 @@ from robomind.analyzers.ai_service_analyzer import (
     AIServiceAnalysisResult,
     analyze_ai_services,
 )
+from robomind.analyzers.impact_analyzer import (
+    ImpactAnalyzer,
+    ImpactItem,
+    ImpactResult,
+    analyze_impact,
+)
 
 __all__ = [
     # Coupling
@@ -160,4 +166,9 @@ __all__ = [
     "AIServiceInfo",
     "AIServiceAnalysisResult",
     "analyze_ai_services",
+    # Impact Analysis
+    "ImpactAnalyzer",
+    "ImpactItem",
+    "ImpactResult",
+    "analyze_impact",
 ]

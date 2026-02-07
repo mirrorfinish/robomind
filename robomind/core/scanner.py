@@ -138,6 +138,7 @@ class ScanResult:
     python_files: List[ProjectFile] = field(default_factory=list)
     launch_files: List[ProjectFile] = field(default_factory=list)
     config_files: List[ProjectFile] = field(default_factory=list)
+    message_files: List[ProjectFile] = field(default_factory=list)
     packages: Dict[str, Path] = field(default_factory=dict)  # package_name -> path
     total_files: int = 0
     total_lines: int = 0
@@ -154,6 +155,7 @@ class ScanResult:
             "python_files": len(self.python_files),
             "launch_files": len(self.launch_files),
             "config_files": len(self.config_files),
+            "message_files": len(self.message_files),
             "total_files": self.total_files,
             "total_lines": self.total_lines,
         }
@@ -503,12 +505,25 @@ class ProjectScanner:
                     result.config_files.append(pf)
                     result.total_files += 1
 
+                elif file_name.endswith((".msg", ".srv", ".action")):
+                    pf = ProjectFile(
+                        path=file_path,
+                        relative_path=relative_path,
+                        file_type="message",
+                        size_bytes=size_bytes,
+                        package_name=package_name,
+                        last_modified=last_modified,
+                    )
+                    result.message_files.append(pf)
+                    result.total_files += 1
+
         result.total_lines = total_lines
 
         # Sort files by path for consistent output
         result.python_files.sort(key=lambda f: f.relative_path)
         result.launch_files.sort(key=lambda f: f.relative_path)
         result.config_files.sort(key=lambda f: f.relative_path)
+        result.message_files.sort(key=lambda f: f.relative_path)
 
         logger.info(f"Scan complete: {result.summary()}")
 
